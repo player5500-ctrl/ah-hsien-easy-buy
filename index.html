@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>阿賢Easy購管理系統</title>
+    <!-- 引入 FontAwesome 圖示 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- 引入系統 CSS 樣式 -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+    <div class="app-container">
+        <!-- ==========================================
+             左側導覽列 (側邊選單)
+             ========================================== -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">
+                    <i class="fa-solid fa-cart-shopping"></i>
+                </div>
+                <div class="sidebar-title">阿賢Easy購</div>
+            </div>
+            
+            <nav class="sidebar-menu">
+                <li class="menu-item active" data-view="dashboard">
+                    <a onclick="switchView('dashboard')">
+                        <i class="fa-solid fa-house"></i>
+                        <span>系統首頁</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-view="group-buys">
+                    <a onclick="switchView('group-buys')">
+                        <i class="fa-solid fa-bullhorn"></i>
+                        <span>團購活動</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-view="orders">
+                    <a onclick="switchView('orders')">
+                        <i class="fa-solid fa-file-invoice-dollar"></i>
+                        <span>訂單管理</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-view="customers">
+                    <a onclick="switchView('customers')">
+                        <i class="fa-solid fa-users"></i>
+                        <span>客戶管理</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-view="products">
+                    <a onclick="switchView('products')">
+                        <i class="fa-solid fa-box-open"></i>
+                        <span>商品管理</span>
+                    </a>
+                </li>
+                <li class="menu-item" data-view="excel">
+                    <a onclick="switchView('excel')">
+                        <i class="fa-solid fa-file-excel"></i>
+                        <span>Excel 匯入／匯出</span>
+                    </a>
+                </li>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <p>阿賢Easy購 v1.0</p>
+                <p>雙人專屬管理系統</p>
+            </div>
+        </aside>
+
+        <!-- ==========================================
+             主要顯示區域
+             ========================================== -->
+        <main class="main-content">
+            <!-- 頂部標頭 -->
+            <header class="main-header">
+                <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleMobileMenu()">
+                    <i class="fa-solid fa-bars"></i>
+                </button>
+                
+                <!-- 當前團購活動選擇器 -->
+                <div class="header-active-group">
+                    <label for="currentGroupBuySelect"><i class="fa-solid fa-business-time"></i> 當前團購活動：</label>
+                    <select id="currentGroupBuySelect" onchange="onGroupBuyChange(this.value)">
+                        <!-- 動態載入 -->
+                    </select>
+                </div>
+                
+                <!-- 雙人管理資訊 -->
+                <div class="user-profile">
+                    <div class="user-avatar"><i class="fa-solid fa-user-friends"></i></div>
+                    <span>管理員 (阿賢夫婦)</span>
+                </div>
+            </header>
+
+            <!-- 內容本體 -->
+            <div class="content-body">
+                
+                <!-- ==========================================================================
+                     1. 首頁 (Dashboard View)
+                     ========================================================================== -->
+                <section id="dashboard-view" class="view-section">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1 id="dashboard-title">載入中...</h1>
+                            <p class="page-subtitle">團購銷售概況與常用操作</p>
+                        </div>
+                        <div class="button-group">
+                            <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
+                            <button class="btn btn-secondary" onclick="switchView('excel', 'import')"><i class="fa-solid fa-file-import"></i> 匯入 Excel</button>
+                            <button class="btn btn-secondary" onclick="switchView('excel', 'export')"><i class="fa-solid fa-file-export"></i> 匯出 Excel</button>
+                        </div>
+                    </div>
+
+                    <!-- 統計資訊 -->
+                    <div class="stats-grid">
+                        <div class="stat-card stat-orange">
+                            <span class="stat-label">客戶總數 (本團)</span>
+                            <span class="stat-value" id="stat-customers">0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-users"></i></div>
+                        </div>
+                        <div class="stat-card stat-coral">
+                            <span class="stat-label">訂單總金額</span>
+                            <span class="stat-value" id="stat-amount">NT$ 0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-hand-holding-dollar"></i></div>
+                        </div>
+                        <div class="stat-card stat-yellow">
+                            <span class="stat-label">未付款單數</span>
+                            <span class="stat-value" id="stat-unpaid">0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-hourglass-half"></i></div>
+                        </div>
+                        <div class="stat-card stat-blue">
+                            <span class="stat-label">未包貨客戶數</span>
+                            <span class="stat-value" id="stat-unpacked">0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-box"></i></div>
+                        </div>
+                        <div class="stat-card stat-teal">
+                            <span class="stat-label">外送單數</span>
+                            <span class="stat-value" id="stat-delivery">0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-truck"></i></div>
+                        </div>
+                        <div class="stat-card stat-purple">
+                            <span class="stat-label">自取單數</span>
+                            <span class="stat-value" id="stat-pickup">0</span>
+                            <div class="stat-icon"><i class="fa-solid fa-house-chimney-user"></i></div>
+                        </div>
+                    </div>
+
+                    <!-- 快速導覽操作區 -->
+                    <div style="margin-bottom: 24px;">
+                        <button class="btn btn-teal btn-lg" onclick="switchView('orders', 'by-customer')">
+                            <i class="fa-solid fa-user-tag"></i> 依客戶整理 (包貨核對)
+                        </button>
+                        <button class="btn btn-secondary btn-lg" onclick="switchView('orders', 'by-product')">
+                            <i class="fa-solid fa-boxes-packing"></i> 依商品整理 (叫貨統計)
+                        </button>
+                    </div>
+
+                    <!-- 首頁追蹤清單 -->
+                    <div class="home-lists-grid">
+                        <!-- 尚未完成/未付款/未包貨訂單 -->
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title"><i class="fa-solid fa-spinner text-orange"></i> 尚未完成訂單 (前10筆)</div>
+                                <span class="badge badge-unpaid" id="home-incomplete-count">0 筆</span>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table-custom">
+                                        <thead>
+                                            <tr>
+                                                <th>訂單編號</th>
+                                                <th>客戶暱稱</th>
+                                                <th>取貨</th>
+                                                <th>金額</th>
+                                                <th>付款</th>
+                                                <th>狀態</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="home-incomplete-orders-tbody">
+                                            <!-- 動態填入 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 最近新增訂單 -->
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title"><i class="fa-solid fa-clock text-teal"></i> 最近新增訂單 (前10筆)</div>
+                                <button class="btn btn-secondary btn-sm" onclick="switchView('orders')">查看全部</button>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table-custom">
+                                        <thead>
+                                            <tr>
+                                                <th>訂單編號</th>
+                                                <th>客戶暱稱</th>
+                                                <th>取貨</th>
+                                                <th>金額</th>
+                                                <th>付款</th>
+                                                <th>狀態</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="home-recent-orders-tbody">
+                                            <!-- 動態填入 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==========================================================================
+                     2. 團購活動管理 (Group Buys View)
+                     ========================================================================== -->
+                <section id="group-buys-view" class="view-section" style="display: none;">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1>團購活動管理</h1>
+                            <p class="page-subtitle">新增、截止與複製團購活動商品</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="openGroupBuyModal()"><i class="fa-solid fa-plus"></i> 新增團購活動</button>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table class="table-custom">
+                                    <thead>
+                                        <tr>
+                                            <th>活動名稱</th>
+                                            <th>開始日期</th>
+                                            <th>截止日期</th>
+                                            <th>狀態</th>
+                                            <th>備註</th>
+                                            <th style="width: 250px;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="group-buys-tbody">
+                                        <!-- 動態填入 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==========================================================================
+                     3. 訂單管理 (Orders View)
+                     ========================================================================== -->
+                <section id="orders-view" class="view-section" style="display: none;">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1>訂單管理</h1>
+                            <p class="page-subtitle">新增訂單、狀態批次修改與包貨核對</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
+                    </div>
+
+                    <!-- 模式切換按鈕 -->
+                    <div class="button-group" style="margin-bottom: 20px;">
+                        <button class="btn btn-primary" id="order-mode-list-btn" onclick="toggleOrderViewMode('list')"><i class="fa-solid fa-list"></i> 一般訂單列表</button>
+                        <button class="btn btn-secondary" id="order-mode-customer-btn" onclick="toggleOrderViewMode('by-customer')"><i class="fa-solid fa-user-tag"></i> 依客戶整理 (包貨核對)</button>
+                        <button class="btn btn-secondary" id="order-mode-product-btn" onclick="toggleOrderViewMode('by-product')"><i class="fa-solid fa-boxes-packing"></i> 依商品整理 (叫貨統計)</button>
+                    </div>
+
+                    <!-- =================== 一般訂單列表模式 =================== -->
+                    <div id="order-list-subview">
+                        <!-- 搜尋與篩選面板 -->
+                        <div class="filter-panel">
+                            <div class="filter-item">
+                                <label for="order-search-input">搜尋 (客戶編號、暱稱、電話、地址、商品)</label>
+                                <input type="text" class="form-control" id="order-search-input" placeholder="請輸入關鍵字..." oninput="onOrderFilterChange()">
+                            </div>
+                            <div class="filter-item" style="max-width: 120px; min-width: 100px;">
+                                <label for="order-filter-pickup">取貨方式</label>
+                                <select class="form-control" id="order-filter-pickup" onchange="onOrderFilterChange()">
+                                    <option value="">全部</option>
+                                    <option value="外送">外送</option>
+                                    <option value="自取">自取</option>
+                                </select>
+                            </div>
+                            <div class="filter-item" style="max-width: 120px; min-width: 100px;">
+                                <label for="order-filter-payment">付款狀態</label>
+                                <select class="form-control" id="order-filter-payment" onchange="onOrderFilterChange()">
+                                    <option value="">全部</option>
+                                    <option value="未付款">未付款</option>
+                                    <option value="已付款">已付款</option>
+                                </select>
+                            </div>
+                            <div class="filter-item" style="max-width: 150px; min-width: 120px;">
+                                <label for="order-filter-status">訂單狀態</label>
+                                <select class="form-control" id="order-filter-status" onchange="onOrderFilterChange()">
+                                    <option value="">全部(不含取消)</option>
+                                    <option value="新訂單">新訂單</option>
+                                    <option value="已確認">已確認</option>
+                                    <option value="已包貨">已包貨</option>
+                                    <option value="已完成">已完成</option>
+                                    <option value="已取消">已取消</option>
+                                    <option value="ALL_WITH_CANCEL">包含已取消</option>
+                                </select>
+                            </div>
+                            <div class="filter-item" style="max-width: 180px; min-width: 140px;">
+                                <label for="order-sort-select">資料排序</label>
+                                <select class="form-control" id="order-sort-select" onchange="onOrderFilterChange()">
+                                    <option value="created-desc">建立時間 (新到舊)</option>
+                                    <option value="created-asc">建立時間 (舊到新)</option>
+                                    <option value="cust-id-asc">客戶編號 (A001...)</option>
+                                    <option value="cust-id-desc">客戶編號 (A999...)</option>
+                                    <option value="cust-name-asc">客戶暱稱 (A-Z)</option>
+                                    <option value="pickup-asc">外送優先</option>
+                                    <option value="pickup-desc">自取優先</option>
+                                    <option value="payment-asc">未付款優先</option>
+                                    <option value="status-packed-asc">未包貨優先</option>
+                                    <option value="amount-desc">訂單金額 (高到低)</option>
+                                </select>
+                            </div>
+                            <button class="btn btn-secondary" onclick="resetOrderFilters()">清除</button>
+                        </div>
+
+                        <!-- 批次修改控制區 -->
+                        <div class="card" style="margin-bottom: 20px; border-color: var(--primary-yellow); background-color: rgba(255, 217, 61, 0.03);">
+                            <div class="card-body" style="padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
+                                <div style="display: flex; align-items: center; gap: 8px; font-weight: 700;">
+                                    <i class="fa-solid fa-square-check text-orange"></i>
+                                    <span>已選取 <span id="selected-orders-count" style="color: var(--primary-orange); font-size: 18px;">0</span> 筆訂單</span>
+                                </div>
+                                <div class="button-group">
+                                    <button class="btn btn-secondary btn-sm" onclick="batchUpdatePayment('已付款')">批次標記已付款</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="batchUpdatePayment('未付款')">批次標記未付款</button>
+                                    <select class="form-control" id="batch-order-status-select" style="width: 140px; display: inline-block; padding: 6px 12px; font-size: 13px;" onchange="batchUpdateOrderStatus(this.value)">
+                                        <option value="">-- 批次變更訂單狀態 --</option>
+                                        <option value="新訂單">新訂單</option>
+                                        <option value="已確認">已確認</option>
+                                        <option value="已包貨">已包貨</option>
+                                        <option value="已完成">已完成</option>
+                                        <option value="已取消">已取消</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 訂單資料容器 -->
+                        <!-- 電腦版表格 -->
+                        <div class="card table-desktop-only">
+                            <div class="card-body" style="padding: 0;">
+                                <div class="table-responsive">
+                                    <table class="table-custom">
+                                        <thead>
+                                            <tr>
+                                                <th style="width: 40px; padding: 16px 20px;"><input type="checkbox" id="order-select-all" onchange="toggleSelectAllOrders(this.checked)"></th>
+                                                <th>訂單編號</th>
+                                                <th>客戶</th>
+                                                <th>暱稱</th>
+                                                <th>配送資訊</th>
+                                                <th>購買商品項目 (數量)</th>
+                                                <th>總額</th>
+                                                <th>付款</th>
+                                                <th>訂單狀態</th>
+                                                <th style="width: 180px;">操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="orders-tbody">
+                                            <!-- 動態載入 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 手機版卡片列表 -->
+                        <div class="responsive-card-list" id="orders-mobile-list">
+                            <!-- 動態載入 -->
+                        </div>
+                    </div>
+
+                    <!-- =================== 依客戶整理模式 =================== -->
+                    <div id="order-customer-subview" style="display: none;">
+                        <div class="filter-panel">
+                            <div class="filter-item">
+                                <label for="customer-summary-search">搜尋客戶暱稱、電話、地址</label>
+                                <input type="text" class="form-control" id="customer-summary-search" placeholder="請輸入客戶關鍵字..." oninput="renderCustomerSummaryView()">
+                            </div>
+                            <div class="checkbox-group" style="margin-bottom: 8px;">
+                                <input type="checkbox" id="customer-summary-unpacked-only" onchange="renderCustomerSummaryView()">
+                                <label for="customer-summary-unpacked-only">只顯示未包貨客戶</label>
+                            </div>
+                            <div class="filter-item" style="max-width: 250px;">
+                                <label for="customer-summary-sort">排序方式</label>
+                                <select class="form-control" id="customer-summary-sort" onchange="renderCustomerSummaryView()">
+                                    <option value="id-asc">客戶編號由小到大 (A001...)</option>
+                                    <option value="id-desc">客戶編號由大到小</option>
+                                    <option value="name-asc">客戶暱稱 (A-Z)</option>
+                                    <option value="delivery-first">外送優先</option>
+                                    <option value="pickup-first">自取優先</option>
+                                    <option value="unpaid-first">未付款優先</option>
+                                    <option value="unpacked-first">未包貨優先</option>
+                                    <option value="amount-desc">訂單金額高到低</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div id="customer-summary-container">
+                            <!-- 動態填入客戶卡片 -->
+                        </div>
+                    </div>
+
+                    <!-- =================== 依商品整理模式 =================== -->
+                    <div id="order-product-subview" style="display: none;">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title"><i class="fa-solid fa-chart-simple text-orange"></i> 本團商品訂購數量統計</div>
+                            </div>
+                            <div class="card-body">
+                                <div class="table-responsive">
+                                    <table class="table-custom">
+                                        <thead>
+                                            <tr>
+                                                <th>商品編號</th>
+                                                <th>商品名稱</th>
+                                                <th>規格</th>
+                                                <th>總訂購數量</th>
+                                                <th>單位</th>
+                                                <th>購買客戶數</th>
+                                                <th>操作</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="product-summary-tbody">
+                                            <!-- 動態載入 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==========================================================================
+                     4. 客戶管理 (Customers View)
+                     ========================================================================== -->
+                <section id="customers-view" class="view-section" style="display: none;">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1>客戶管理</h1>
+                            <p class="page-subtitle">管理客戶暱稱、電話、地址與查看購買歷史</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="openCustomerModal()"><i class="fa-solid fa-plus"></i> 新增客戶</button>
+                    </div>
+
+                    <div class="filter-panel">
+                        <div class="filter-item">
+                            <label for="customer-search-input">搜尋客戶 (編號、暱稱、電話、地址)</label>
+                            <input type="text" class="form-control" id="customer-search-input" placeholder="請輸入編號、暱稱、電話或地址..." oninput="onCustomerFilterChange()">
+                        </div>
+                        <button class="btn btn-secondary" onclick="resetCustomerFilters()">清除</button>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-body" style="padding: 0;">
+                            <!-- 電腦版表格 -->
+                            <div class="table-responsive table-desktop-only">
+                                <table class="table-custom">
+                                    <thead>
+                                        <tr>
+                                            <th>客戶編號</th>
+                                            <th>客戶暱稱</th>
+                                            <th>電話</th>
+                                            <th>外送地址</th>
+                                            <th>備註</th>
+                                            <th style="width: 250px;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="customers-tbody">
+                                        <!-- 動態載入 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- 手機版卡片 -->
+                            <div class="responsive-card-list" id="customers-mobile-list" style="padding: 16px;">
+                                <!-- 動態載入 -->
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==========================================================================
+                     5. 商品管理 (Products View)
+                     ========================================================================== -->
+                <section id="products-view" class="view-section" style="display: none;">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1>商品管理</h1>
+                            <p class="page-subtitle">商品資料建置與啟用/停用控制</p>
+                        </div>
+                        <button class="btn btn-primary" onclick="openProductModal()"><i class="fa-solid fa-plus"></i> 新增商品</button>
+                    </div>
+
+                    <div class="filter-panel">
+                        <div class="filter-item">
+                            <label for="product-search-input">搜尋商品 (編號、名稱)</label>
+                            <input type="text" class="form-control" id="product-search-input" placeholder="請輸入編號、名稱..." oninput="onProductFilterChange()">
+                        </div>
+                        <div class="filter-item" style="max-width: 200px;">
+                            <label for="product-sort-select">排序欄位</label>
+                            <select class="form-control" id="product-sort-select" onchange="onProductFilterChange()">
+                                <option value="id-asc">商品編號 (小到大)</option>
+                                <option value="id-desc">商品編號 (大到小)</option>
+                                <option value="name-asc">商品名稱 (A-Z)</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-secondary" onclick="resetProductFilters()">清除</button>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-body" style="padding: 0;">
+                            <!-- 電腦版表格 -->
+                            <div class="table-responsive table-desktop-only">
+                                <table class="table-custom">
+                                    <thead>
+                                        <tr>
+                                            <th>商品編號</th>
+                                            <th>照片</th>
+                                            <th>商品名稱</th>
+                                            <th>規格</th>
+                                            <th>售價</th>
+                                            <th>單位</th>
+                                            <th>啟用狀態</th>
+                                            <th style="width: 200px;">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="products-tbody">
+                                        <!-- 動態載入 -->
+                                    </tbody>
+                                </table>
+                            </div>
+                            <!-- 手機版卡片 -->
+                            <div class="responsive-card-list" id="products-mobile-list" style="padding: 16px;">
+                                <!-- 動態載入 -->
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- ==========================================================================
+                     6. Excel 匯入／匯出 (Excel View)
+                     ========================================================================== -->
+                <section id="excel-view" class="view-section" style="display: none;">
+                    <div class="page-header-actions">
+                        <div>
+                            <h1>Excel 匯入／匯出</h1>
+                            <p class="page-subtitle">透過 Excel 快速批次更新資料或匯出團購統計總表</p>
+                        </div>
+                    </div>
+
+                    <!-- 匯入與匯出選項卡 -->
+                    <div class="import-steps" style="margin-bottom: 24px;">
+                        <div class="import-step active" id="tab-excel-import" onclick="toggleExcelSubtab('import')">
+                            <i class="fa-solid fa-file-arrow-up"></i> 資料匯入精靈
+                        </div>
+                        <div class="import-step" id="tab-excel-export" onclick="toggleExcelSubtab('export')">
+                            <i class="fa-solid fa-file-arrow-down"></i> 資料匯出中心
+                        </div>
+                    </div>
+
+                    <!-- =================== 匯入子頁面 =================== -->
+                    <div id="excel-import-subview">
+                        <!-- 第一步：選擇匯入類型 -->
+                        <div class="card" id="import-step-1">
+                            <div class="card-header"><div class="card-title">第一步：選擇匯入資料類型</div></div>
+                            <div class="card-body">
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label class="form-label">選擇類型</label>
+                                        <select class="form-control" id="excel-import-type" onchange="onImportTypeSelect()">
+                                            <option value="">-- 請選擇 --</option>
+                                            <option value="customers">匯入「客戶資料」</option>
+                                            <option value="products">匯入「商品資料」</option>
+                                            <option value="orders">匯入「訂單資料」</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group" style="justify-content: flex-end;" id="template-download-container">
+                                        <!-- 動態產生範本下載按鈕 -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 第二步：上傳檔案 -->
+                        <div class="card" id="import-step-2" style="display: none;">
+                            <div class="card-header"><div class="card-title">第二步：選擇並上傳檔案</div></div>
+                            <div class="card-body">
+                                <div class="upload-zone" onclick="triggerFileInput()">
+                                    <i class="fa-solid fa-cloud-arrow-up"></i>
+                                    <p>點擊上傳檔案 或 拖曳檔案至此</p>
+                                    <span>僅支援 .xlsx 與 .csv 格式檔案</span>
+                                    <input type="file" id="excel-file-input" style="display: none;" accept=".xlsx, .xls, .csv" onchange="handleFileSelect(event)">
+                                </div>
+                                <div id="selected-file-info" style="margin-top: 15px; font-weight: 700; display: none; text-align: center; color: var(--primary-teal);">
+                                    已選取檔案：<span id="selected-file-name"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 第三步：資料預覽與檢驗 -->
+                        <div class="card" id="import-step-3" style="display: none;">
+                            <div class="card-header"><div class="card-title">第三步：資料預覽與格式檢查</div></div>
+                            <div class="card-body">
+                                <!-- 統計警示 -->
+                                <div class="import-summary">
+                                    <div class="summary-badge sum-total">
+                                        <span class="val" id="import-stat-total">0</span>
+                                        <span class="lbl">總筆數</span>
+                                    </div>
+                                    <div class="summary-badge sum-new">
+                                        <span class="val" id="import-stat-new">0</span>
+                                        <span class="lbl">新增筆數</span>
+                                    </div>
+                                    <div class="summary-badge sum-update">
+                                        <span class="val" id="import-stat-update">0</span>
+                                        <span class="lbl">更新筆數</span>
+                                    </div>
+                                    <div class="summary-badge sum-dup">
+                                        <span class="val" id="import-stat-dup">0</span>
+                                        <span class="lbl">重複提示數</span>
+                                    </div>
+                                    <div class="summary-badge sum-err">
+                                        <span class="val" id="import-stat-err" style="color: #d63d3b;">0</span>
+                                        <span class="lbl">錯誤筆數</span>
+                                    </div>
+                                </div>
+
+                                <!-- 錯誤提示列表 -->
+                                <div class="error-list" id="import-errors-wrapper" style="display: none; margin-bottom: 24px;">
+                                    <div class="error-list-title">
+                                        <i class="fa-solid fa-triangle-exclamation"></i>
+                                        <span>發現以下資料錯誤（錯誤資料無法匯入，請修正後重新上傳）：</span>
+                                    </div>
+                                    <div id="import-errors-container">
+                                        <!-- 動態產生錯誤項目 -->
+                                    </div>
+                                </div>
+
+                                <!-- 重複提示列表 -->
+                                <div class="alert alert-warning" id="import-warnings-wrapper" style="display: none; margin-bottom: 24px;">
+                                    <div>
+                                        <div style="font-weight: 700; margin-bottom: 6px;"><i class="fa-solid fa-circle-info"></i> 疑似重複的客戶提示：</div>
+                                        <ul id="import-warnings-container" style="padding-left: 20px;">
+                                            <!-- 動態產生重複項目 -->
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <!-- 資料預覽表格 -->
+                                <div class="table-responsive" style="max-height: 300px; border: 1px solid var(--border-light); border-radius: var(--radius-md);">
+                                    <table class="table-custom" style="font-size: 13px;">
+                                        <thead id="import-preview-thead">
+                                            <!-- 動態填入標題 -->
+                                        </thead>
+                                        <tbody id="import-preview-tbody">
+                                            <!-- 動態填入內容 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+
+                                <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
+                                    <button class="btn btn-secondary" onclick="resetImportWizard()">取消並重新開始</button>
+                                    <button class="btn btn-primary" id="btn-execute-import" disabled onclick="executeImport()"><i class="fa-solid fa-circle-check"></i> 確認正式匯入資料</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- =================== 匯出子頁面 =================== -->
+                    <div id="excel-export-subview" style="display: none;">
+                        <div class="card">
+                            <div class="card-header"><div class="card-title">匯出團購活動資料（含四個工作表）</div></div>
+                            <div class="card-body">
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label class="form-label" for="export-group-select">選擇匯出活動</label>
+                                        <select class="form-control" id="export-group-select">
+                                            <!-- 動態載入活動項目 -->
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">篩選配送方式</label>
+                                        <select class="form-control" id="export-filter-pickup">
+                                            <option value="all">全部配送方式</option>
+                                            <option value="外送">僅外送</option>
+                                            <option value="自取">僅自取</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">篩選付款狀態</label>
+                                        <select class="form-control" id="export-filter-payment">
+                                            <option value="all">全部付款狀態</option>
+                                            <option value="已付款">僅已付款</option>
+                                            <option value="未付款">僅未付款</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label">篩選訂單狀態</label>
+                                        <select class="form-control" id="export-filter-status">
+                                            <option value="all">全部狀態 (不含已取消)</option>
+                                            <option value="已包貨">僅已包貨</option>
+                                            <option value="未包貨">僅未包貨</option>
+                                            <option value="已完成">僅已完成</option>
+                                            <option value="all-with-cancelled">包含已取消的訂單</option>
+                                        </select>
+                                    </div>
+                                </div>
+
+                                <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                                    <button class="btn btn-primary btn-lg" onclick="exportToExcel()"><i class="fa-solid fa-file-excel"></i> 開始產生並下載 Excel 報表</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+                
+            </div>
+        </main>
+    </div>
+
+    <!-- ==========================================================================
+         對話視窗區 (Modals)
+         ========================================================================== -->
+    
+    <!-- 1. 團購活動 Modal -->
+    <div class="modal-backdrop" id="group-buy-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="group-buy-modal-title">新增團購活動</h3>
+                <button class="modal-close" onclick="closeGroupBuyModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="group-buy-form">
+                    <input type="hidden" id="group-buy-id">
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label class="form-label required" for="gb-name">團購活動名稱</label>
+                        <input type="text" class="form-control" id="gb-name" required placeholder="例如：2026年7月第一團">
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label" for="gb-start-date">開始日期</label>
+                            <input type="date" class="form-control" id="gb-start-date">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="gb-end-date">截止日期</label>
+                            <input type="date" class="form-control" id="gb-end-date">
+                        </div>
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="gb-status">活動狀態</label>
+                            <select class="form-control" id="gb-status" required>
+                                <option value="開放">開放</option>
+                                <option value="截止">截止</option>
+                                <option value="完成">完成</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label class="form-label" for="gb-notes">備註欄位</label>
+                        <textarea class="form-control" id="gb-notes" placeholder="其他活動詳情說明..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeGroupBuyModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveGroupBuy()">儲存活動</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. 商品 Modal -->
+    <div class="modal-backdrop" id="product-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="product-modal-title">新增商品</h3>
+                <button class="modal-close" onclick="closeProductModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="product-form">
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="prod-id">商品編號</label>
+                            <input type="text" class="form-control" id="prod-id" required placeholder="例如：P001">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="prod-name">商品名稱</label>
+                            <input type="text" class="form-control" id="prod-name" required placeholder="例如：高麗菜水餃">
+                        </div>
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label" for="prod-specs">規格/口味</label>
+                            <input type="text" class="form-control" id="prod-specs" placeholder="例如：20 顆、原味">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="prod-price">售價 (元)</label>
+                            <input type="number" class="form-control" id="prod-price" required min="0" placeholder="例如：120">
+                        </div>
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="prod-unit">單位</label>
+                            <input type="text" class="form-control" id="prod-unit" required placeholder="例如：包、盒、袋">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="prod-enabled">啟用狀態</label>
+                            <select class="form-control" id="prod-enabled" required>
+                                <option value="true">啟用中</option>
+                                <option value="false">已停用</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label class="form-label" for="prod-photo">商品照片網址 (選填)</label>
+                        <input type="text" class="form-control" id="prod-photo" placeholder="http:// 圖片網址 (選填)">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeProductModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveProduct()">儲存商品</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. 客戶 Modal -->
+    <div class="modal-backdrop" id="customer-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="customer-modal-title">新增客戶</h3>
+                <button class="modal-close" onclick="closeCustomerModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="customer-form">
+                    <input type="hidden" id="customer-edit-mode" value="create">
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="cust-id">客戶編號</label>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" class="form-control" id="cust-id" required placeholder="例如：A001">
+                                <button type="button" class="btn btn-secondary btn-sm" onclick="autoGenerateCustId()"><i class="fa-solid fa-wand-magic-sparkles"></i> 自動</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="cust-nickname">客戶暱稱</label>
+                            <input type="text" class="form-control" id="cust-nickname" required placeholder="請輸入客戶暱稱...">
+                        </div>
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="cust-phone">連絡電話</label>
+                            <input type="text" class="form-control" id="cust-phone" required placeholder="例如：0912-345-678" oninput="checkDuplicateCustomerWarning()">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="cust-address">配送地址 (自取可免填)</label>
+                            <input type="text" class="form-control" id="cust-address" placeholder="例如：台北市信義區信義路五段7號" oninput="checkDuplicateCustomerWarning()">
+                        </div>
+                    </div>
+                    
+                    <!-- 重複警示提醒區 -->
+                    <div class="alert alert-warning" id="customer-duplicate-alert" style="display: none; margin-bottom: 16px;">
+                        <i class="fa-solid fa-triangle-exclamation"></i>
+                        <span id="customer-duplicate-alert-msg">疑似有重複的客戶資料！</span>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label class="form-label" for="cust-notes">客戶備註</label>
+                        <textarea class="form-control" id="cust-notes" placeholder="常買商品、特殊備註..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCustomerModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveCustomer()">儲存客戶</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. 新增/編輯訂單 Modal -->
+    <div class="modal-backdrop" id="order-modal">
+        <div class="modal-container" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3 class="modal-title" id="order-modal-title">新增訂單</h3>
+                <button class="modal-close" onclick="closeOrderModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="order-form">
+                    <input type="hidden" id="order-id">
+                    
+                    <!-- 所屬活動 -->
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="ord-group-buy">選擇團購活動</label>
+                            <select class="form-control" id="ord-group-buy" required>
+                                <!-- 動態載入 -->
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="ord-customer-select">選取客戶</label>
+                            <select class="form-control" id="ord-customer-select" required onchange="onOrderCustomerSelect(this.value)">
+                                <option value="">-- 請選擇客戶 --</option>
+                                <!-- 動態載入 -->
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 客戶詳細資料 (唯讀，或直接由客戶帶入) -->
+                    <div class="form-grid" style="margin-bottom: 16px; background-color: var(--bg-cream); padding: 14px; border-radius: var(--radius-md);">
+                        <div class="form-group">
+                            <label class="form-label">客戶暱稱</label>
+                            <input type="text" class="form-control" id="ord-cust-nickname" readonly style="background-color: #EFEFEF;">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">連絡電話</label>
+                            <input type="text" class="form-control" id="ord-cust-phone" readonly style="background-color: #EFEFEF;">
+                        </div>
+                        <div class="form-group" class="full-width">
+                            <label class="form-label">預設配送地址</label>
+                            <input type="text" class="form-control" id="ord-cust-address" readonly style="background-color: #EFEFEF;">
+                        </div>
+                    </div>
+
+                    <!-- 配送與狀態資訊 -->
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="ord-pickup-type">取貨方式</label>
+                            <select class="form-control" id="ord-pickup-type" required onchange="onOrderPickupTypeChange(this.value)">
+                                <option value="自取">自取</option>
+                                <option value="外送">外送</option>
+                            </select>
+                        </div>
+                        <div class="form-group" id="ord-delivery-address-group" style="display: none;">
+                            <label class="form-label required" for="ord-delivery-address">外送地址</label>
+                            <input type="text" class="form-control" id="ord-delivery-address" placeholder="請輸入完整外送地址...">
+                        </div>
+                    </div>
+
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
+                            <label class="form-label required" for="ord-payment-status">付款狀態</label>
+                            <select class="form-control" id="ord-payment-status" required>
+                                <option value="未付款">未付款</option>
+                                <option value="已付款">已付款</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label required" for="ord-order-status">訂單狀態</label>
+                            <select class="form-control" id="ord-order-status" required>
+                                <option value="新訂單">新訂單</option>
+                                <option value="已確認">已確認</option>
+                                <option value="已包貨">已包貨</option>
+                                <option value="已完成">已完成</option>
+                                <option value="已取消">已取消</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- 訂購商品明細 (購物車區塊) -->
+                    <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                        <label class="form-label required">購買商品項目</label>
+                        <button type="button" class="btn btn-secondary btn-sm" onclick="addOrderItemRow()"><i class="fa-solid fa-plus"></i> 新增商品列</button>
+                    </div>
+
+                    <div class="cart-items-container">
+                        <div class="cart-header-row">
+                            <span>選擇商品</span>
+                            <span>規格 (帶入)</span>
+                            <span>數量</span>
+                            <span>單價 (可修改)</span>
+                            <span>小計</span>
+                            <span>刪除</span>
+                        </div>
+                        <div id="cart-items-list">
+                            <!-- 購物車列動態產生 -->
+                        </div>
+                        <div class="cart-total-row">
+                            訂單總額：NT$ <span id="cart-total-amount">0</span>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label" for="ord-notes">訂單備註</label>
+                        <textarea class="form-control" id="ord-notes" placeholder="包貨備註、特別叮嚀..."></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeOrderModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveOrder()">儲存訂單</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 5. 檢視訂單詳情 Modal -->
+    <div class="modal-backdrop" id="order-view-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title">訂單明細資料</h3>
+                <button class="modal-close" onclick="closeModal('order-view-modal')">&times;</button>
+            </div>
+            <div class="modal-body" id="order-view-content">
+                <!-- 動態載入 -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('order-view-modal')">關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 6. 客戶購買歷史 Modal -->
+    <div class="modal-backdrop" id="customer-history-modal">
+        <div class="modal-container" style="max-width: 800px;">
+            <div class="modal-header">
+                <h3 class="modal-title" id="cust-history-title">客戶購買歷史</h3>
+                <button class="modal-close" onclick="closeModal('customer-history-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                    <table class="table-custom">
+                        <thead>
+                            <tr>
+                                <th>團購活動</th>
+                                <th>訂單編號</th>
+                                <th>取貨方式</th>
+                                <th>購買商品明細</th>
+                                <th>總額</th>
+                                <th>付款</th>
+                                <th>狀態</th>
+                            </tr>
+                        </thead>
+                        <tbody id="cust-history-tbody">
+                            <!-- 動態載入 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('customer-history-modal')">關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 7. 商品購買名單 Modal (叫貨用) -->
+    <div class="modal-backdrop" id="product-buyers-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="product-buyers-title">商品購買客戶名單</h3>
+                <button class="modal-close" onclick="closeModal('product-buyers-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="table-responsive">
+                    <table class="table-custom">
+                        <thead>
+                            <tr>
+                                <th>客戶編號</th>
+                                <th>客戶暱稱</th>
+                                <th>取貨方式</th>
+                                <th>購買數量</th>
+                                <th>金額</th>
+                                <th>付款狀態</th>
+                                <th>包貨核對</th>
+                            </tr>
+                        </thead>
+                        <tbody id="product-buyers-tbody">
+                            <!-- 動態載入 -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('product-buyers-modal')">關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 載入 SheetJS (用於 Excel 匯入與匯出) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- 載入核心 JS 檔案 -->
+    <script src="app.js"></script>
+</body>
+</html>

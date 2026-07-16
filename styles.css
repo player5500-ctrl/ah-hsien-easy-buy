@@ -595,7 +595,7 @@ h1 {
 .voice-support-message, .voice-error { margin: 8px 0 0; padding: 12px 14px; border-radius: var(--radius-md); background: #fff3e8; color: #9a4d00; font-weight: 700; }
 .voice-inline-status, .voice-status { min-height: 24px; margin: 8px 0 0; color: var(--text-muted); font-weight: 700; }
 .voice-modal-container { max-width: 620px; max-height: min(90vh, 760px); }
-.voice-modal-body { display: grid; gap: 18px; }
+.voice-modal-body { display: grid; gap: 18px; min-height: 0; }
 .voice-example { padding: 14px 16px; border-radius: var(--radius-md); background: var(--primary-orange-light); line-height: 1.6; }
 .voice-record-panel { text-align: center; }
 .voice-record-btn { min-width: 160px; min-height: 48px; }
@@ -608,9 +608,15 @@ h1 {
 @keyframes voice-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 122, 0, 0.35); } 50% { box-shadow: 0 0 0 10px rgba(255, 122, 0, 0); } }
 
 @media (max-width: 600px) {
-    .voice-modal-container { width: 94%; max-height: 92vh; }
-    .voice-modal-footer { flex-wrap: wrap; }
-    .voice-modal-footer .btn { flex: 1 1 130px; min-height: 44px; }
+    .modal-backdrop:has(.voice-modal-container) { align-items: flex-start; padding: 12px 0; }
+    .voice-modal-container { width: 94%; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); }
+    .voice-modal-container .modal-header { flex: 0 0 auto; padding: 14px 16px; }
+    .voice-modal-container .modal-title { font-size: 18px; line-height: 1.3; }
+    .voice-modal-body { gap: 12px; padding: 14px 16px; overflow-y: auto; overscroll-behavior: contain; }
+    .voice-example { padding: 10px 12px; }
+    .voice-record-btn { min-height: 44px; }
+    .voice-modal-footer { flex: 0 0 auto; flex-wrap: nowrap; gap: 8px; padding: 12px 16px; }
+    .voice-modal-footer .btn { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 10px 8px; font-size: 14px; }
     .page-header-actions > .button-group { width: 100%; }
     .page-header-actions > .button-group .btn { flex: 1; }
     .product-voice-quick-btn { width: 100%; order: 3; }

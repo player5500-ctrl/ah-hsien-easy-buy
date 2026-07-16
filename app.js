@@ -235,7 +235,10 @@ window.onload = function() {
     initDatabase();
     renderCurrentGroupBuySelect();
     switchView('dashboard');
+    initializeProductVoiceSupport();
 };
+
+window.addEventListener('beforeunload', () => stopProductVoiceRecognition('已停止錄音'));
 
 // 初始化資料庫 (若 LocalStorage 無資料則載入示範資料)
 function initDatabase() {
@@ -693,6 +696,179 @@ function resetProductFilters() {
     renderProducts();
 }
 
+// --- 商品繁體中文語音輸入 ---
+let productVoiceRecognizer = null;
+let productVoiceParsed = null;
+let productVoiceField = null;
+
+function getSpeechRecognitionConstructor() {
+    return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function setProductVoiceStatus(message, isListening = false) {
+    const status = document.getElementById('product-voice-status');
+    const button = document.getElementById('product-voice-record-btn');
+    if (status) status.textContent = message;
+    if (button) {
+        button.classList.toggle('is-listening', isListening);
+        button.innerHTML = isListening ? '<i class="fa-solid fa-stop"></i> 停止錄音' : '<i class="fa-solid fa-microphone"></i> 開始錄音';
+    }
+}
+
+function setProductVoiceError(message = '') {
+    const error = document.getElementById('product-voice-error');
+    if (!error) return;
+    error.textContent = message;
+    error.hidden = !message;
+}
+
+function getProductVoiceErrorMessage(code) {
+    if (code === 'not-allowed' || code === 'service-not-allowed') return '麥克風權限遭拒絕，請改用手動輸入';
+    if (code === 'audio-capture') return '尚未取得麥克風權限';
+    if (code === 'no-speech') return '沒有偵測到語音，請重新嘗試';
+    return '語音辨識失敗，請改用手動輸入';
+}
+
+function stopProductVoiceRecognition(statusMessage = '已停止錄音') {
+    if (productVoiceRecognizer) productVoiceRecognizer.stop();
+    productVoiceRecognizer = null;
+    productVoiceField = null;
+    document.querySelectorAll('.voice-field-btn').forEach(button => button.classList.remove('is-listening'));
+    const inlineStatus = document.getElementById('product-field-voice-status');
+    if (inlineStatus && inlineStatus.textContent === '正在聆聽…') inlineStatus.textContent = statusMessage;
+    setProductVoiceStatus(statusMessage, false);
+}
+
+function createProductRecognizer(onResult, onEnd) {
+    const Recognition = getSpeechRecognitionConstructor();
+    if (!Recognition) return null;
+    return ProductVoice.createSpeechRecognizer({
+        Recognition,
+        onResult,
+        onError(code) {
+            const message = getProductVoiceErrorMessage(code);
+            setProductVoiceError(message);
+            const inlineStatus = document.getElementById('product-field-voice-status');
+            if (inlineStatus) inlineStatus.textContent = message;
+        },
+        onEnd() {
+            productVoiceRecognizer = null;
+            productVoiceField = null;
+            document.querySelectorAll('.voice-field-btn').forEach(button => button.classList.remove('is-listening'));
+            setProductVoiceStatus('已停止錄音', false);
+            if (onEnd) onEnd();
+        }
+    });
+}
+
+function startProductFieldVoice(field) {
+    stopProductVoiceRecognition('已停止錄音');
+    const fieldConfig = {
+        name: { input: 'prod-name', normalize: value => value.trim() },
+        specs: { input: 'prod-specs', normalize: ProductVoice.normalizeSpecs },
+        price: { input: 'prod-price', normalize: ProductVoice.parsePrice },
+        unit: { input: 'prod-unit', normalize: value => value.trim() }
+    }[field];
+    if (!fieldConfig || !getSpeechRecognitionConstructor()) return;
+    const inlineStatus = document.getElementById('product-field-voice-status');
+    const button = document.querySelector(`[data-voice-field="${field}"]`);
+    productVoiceField = field;
+    productVoiceRecognizer = createProductRecognizer(transcript => {
+        const value = fieldConfig.normalize(transcript);
+        if (field === 'price' && value === null) {
+            inlineStatus.textContent = '無法辨識售價，請手動確認';
+            return;
+        }
+        document.getElementById(fieldConfig.input).value = value;
+        inlineStatus.textContent = '辨識完成，請確認內容後再儲存商品';
+    });
+    if (productVoiceRecognizer && productVoiceRecognizer.start()) {
+        if (button) button.classList.add('is-listening');
+        inlineStatus.textContent = '正在聆聽…';
+    }
+}
+
+function resetProductVoicePreview() {
+    productVoiceParsed = null;
+    document.getElementById('product-voice-transcript').textContent = '尚未辨識';
+    ['name', 'specs', 'price', 'unit'].forEach(field => document.getElementById(`voice-preview-${field}`).textContent = '—');
+    document.getElementById('product-voice-apply-btn').disabled = true;
+    document.getElementById('product-voice-retry-btn').disabled = true;
+    setProductVoiceError('');
+    setProductVoiceStatus('請開始說話', false);
+}
+
+function openProductVoiceModal() {
+    if (!getSpeechRecognitionConstructor()) {
+        alert('此瀏覽器暫不支援語音輸入，請改用鍵盤輸入');
+        return;
+    }
+    if (!document.getElementById('product-modal').classList.contains('show')) openProductModal();
+    resetProductVoicePreview();
+    const modal = document.getElementById('product-voice-modal');
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeProductVoiceModal() {
+    stopProductVoiceRecognition('已停止錄音');
+    const modal = document.getElementById('product-voice-modal');
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+function toggleProductVoiceRecording() {
+    if (productVoiceRecognizer && productVoiceRecognizer.isActive()) {
+        stopProductVoiceRecognition('已停止錄音');
+        return;
+    }
+    setProductVoiceError('');
+    setProductVoiceStatus('正在聆聽…', true);
+    productVoiceRecognizer = createProductRecognizer(transcript => {
+        setProductVoiceStatus('正在整理商品資料…', false);
+        productVoiceParsed = ProductVoice.parseProductSpeech(transcript);
+        document.getElementById('product-voice-transcript').textContent = transcript;
+        document.getElementById('voice-preview-name').textContent = productVoiceParsed.name || '—';
+        document.getElementById('voice-preview-specs').textContent = productVoiceParsed.specs || '—';
+        document.getElementById('voice-preview-price').textContent = productVoiceParsed.price === null ? '—' : productVoiceParsed.price;
+        document.getElementById('voice-preview-unit').textContent = productVoiceParsed.unit || '—';
+        document.getElementById('product-voice-apply-btn').disabled = !(productVoiceParsed.name || productVoiceParsed.specs || productVoiceParsed.price !== null || productVoiceParsed.unit);
+        document.getElementById('product-voice-retry-btn').disabled = false;
+        if (productVoiceParsed.priceError) setProductVoiceError('無法辨識售價，請手動確認');
+        else if (productVoiceParsed.missingFields.length) setProductVoiceError('語音內容不完整，請補充缺少的欄位');
+        setProductVoiceStatus('辨識完成', false);
+    });
+    if (!productVoiceRecognizer || !productVoiceRecognizer.start()) {
+        setProductVoiceError('語音辨識失敗，請改用手動輸入');
+        setProductVoiceStatus('已停止錄音', false);
+    }
+}
+
+function restartProductVoice() {
+    stopProductVoiceRecognition('已停止錄音');
+    resetProductVoicePreview();
+    toggleProductVoiceRecording();
+}
+
+function applyProductVoiceToForm() {
+    if (!productVoiceParsed) return;
+    if (productVoiceParsed.name) document.getElementById('prod-name').value = productVoiceParsed.name;
+    if (productVoiceParsed.specs) document.getElementById('prod-specs').value = productVoiceParsed.specs;
+    if (productVoiceParsed.price !== null) document.getElementById('prod-price').value = productVoiceParsed.price;
+    if (productVoiceParsed.unit) document.getElementById('prod-unit').value = productVoiceParsed.unit;
+    closeProductVoiceModal();
+    document.getElementById('product-field-voice-status').textContent = '已套用到表單，請確認內容後按「儲存商品」';
+}
+
+function initializeProductVoiceSupport() {
+    const supported = Boolean(getSpeechRecognitionConstructor());
+    document.querySelectorAll('.voice-field-btn').forEach(button => button.disabled = !supported);
+    const quickButton = document.getElementById('product-voice-quick-btn');
+    if (quickButton) quickButton.disabled = !supported;
+    const message = document.getElementById('product-voice-support-message');
+    if (message) message.hidden = supported;
+}
+
 function openProductModal(id = '') {
     const modal = document.getElementById('product-modal');
     const title = document.getElementById('product-modal-title');
@@ -733,6 +909,7 @@ function openProductModal(id = '') {
 }
 
 function closeProductModal() {
+    closeProductVoiceModal();
     document.getElementById('product-modal').classList.remove('show');
 }
 

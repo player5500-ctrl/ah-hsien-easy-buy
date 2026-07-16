@@ -496,7 +496,9 @@
                             <h1>商品管理</h1>
                             <p class="page-subtitle">商品資料建置與啟用/停用控制</p>
                         </div>
-                        <button class="btn btn-primary" onclick="openProductModal()"><i class="fa-solid fa-plus"></i> 新增商品</button>
+                        <div class="button-group">
+                            <button class="btn btn-primary" onclick="openProductModal()"><i class="fa-solid fa-plus"></i> 新增商品</button>
+                        </div>
                     </div>
 
                     <div class="filter-panel">
@@ -512,6 +514,7 @@
                                 <option value="name-asc">商品名稱 (A-Z)</option>
                             </select>
                         </div>
+                        <button class="btn btn-primary product-voice-quick-btn" id="product-voice-quick-btn" onclick="openProductVoiceModal()" aria-label="使用語音快速新增商品" title="語音快速新增"><i class="fa-solid fa-microphone"></i> 語音快速新增</button>
                         <button class="btn btn-secondary" onclick="resetProductFilters()">清除</button>
                     </div>
 
@@ -793,23 +796,23 @@
                         </div>
                         <div class="form-group">
                             <label class="form-label required" for="prod-name">商品名稱</label>
-                            <input type="text" class="form-control" id="prod-name" required placeholder="例如：高麗菜水餃">
+                            <div class="voice-input-row"><input type="text" class="form-control" id="prod-name" required placeholder="例如：高麗菜水餃"><button type="button" class="voice-field-btn" data-voice-field="name" onclick="startProductFieldVoice('name')" aria-label="語音輸入商品名稱" title="語音輸入商品名稱"><i class="fa-solid fa-microphone"></i></button></div>
                         </div>
                     </div>
                     <div class="form-grid" style="margin-bottom: 16px;">
                         <div class="form-group">
                             <label class="form-label" for="prod-specs">規格/口味</label>
-                            <input type="text" class="form-control" id="prod-specs" placeholder="例如：20 顆、原味">
+                            <div class="voice-input-row"><input type="text" class="form-control" id="prod-specs" placeholder="例如：20 顆、原味"><button type="button" class="voice-field-btn" data-voice-field="specs" onclick="startProductFieldVoice('specs')" aria-label="語音輸入規格" title="語音輸入規格"><i class="fa-solid fa-microphone"></i></button></div>
                         </div>
                         <div class="form-group">
                             <label class="form-label required" for="prod-price">售價 (元)</label>
-                            <input type="number" class="form-control" id="prod-price" required min="0" placeholder="例如：120">
+                            <div class="voice-input-row"><input type="number" class="form-control" id="prod-price" required min="0" placeholder="例如：120"><button type="button" class="voice-field-btn" data-voice-field="price" onclick="startProductFieldVoice('price')" aria-label="語音輸入售價" title="語音輸入售價"><i class="fa-solid fa-microphone"></i></button></div>
                         </div>
                     </div>
                     <div class="form-grid" style="margin-bottom: 16px;">
                         <div class="form-group">
                             <label class="form-label required" for="prod-unit">單位</label>
-                            <input type="text" class="form-control" id="prod-unit" required placeholder="例如：包、盒、袋">
+                            <div class="voice-input-row"><input type="text" class="form-control" id="prod-unit" required placeholder="例如：包、盒、袋"><button type="button" class="voice-field-btn" data-voice-field="unit" onclick="startProductFieldVoice('unit')" aria-label="語音輸入單位" title="語音輸入單位"><i class="fa-solid fa-microphone"></i></button></div>
                         </div>
                         <div class="form-group">
                             <label class="form-label required" for="prod-enabled">啟用狀態</label>
@@ -823,11 +826,49 @@
                         <label class="form-label" for="prod-photo">商品照片網址 (選填)</label>
                         <input type="text" class="form-control" id="prod-photo" placeholder="http:// 圖片網址 (選填)">
                     </div>
+                    <p class="voice-support-message" id="product-voice-support-message" hidden>此瀏覽器暫不支援語音輸入，請改用鍵盤輸入。</p>
+                    <p class="voice-inline-status" id="product-field-voice-status" role="status" aria-live="polite"></p>
                 </form>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeProductModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveProduct()">儲存商品</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 商品語音快速新增 Modal -->
+    <div class="modal-backdrop" id="product-voice-modal" aria-hidden="true">
+        <div class="modal-container voice-modal-container" role="dialog" aria-modal="true" aria-labelledby="product-voice-title">
+            <div class="modal-header">
+                <h3 class="modal-title" id="product-voice-title"><i class="fa-solid fa-microphone text-orange"></i> 語音快速新增商品</h3>
+                <button class="modal-close" onclick="closeProductVoiceModal()" aria-label="關閉語音快速新增">&times;</button>
+            </div>
+            <div class="modal-body voice-modal-body">
+                <div class="voice-example"><strong>說話範例</strong><br>商品名稱手工蛋捲，規格原味十二入，售價兩百元，單位盒。</div>
+                <div class="voice-record-panel">
+                    <button type="button" class="btn btn-primary voice-record-btn" id="product-voice-record-btn" onclick="toggleProductVoiceRecording()"><i class="fa-solid fa-microphone"></i> 開始錄音</button>
+                    <p class="voice-status" id="product-voice-status" role="status" aria-live="polite">請開始說話</p>
+                </div>
+                <div class="voice-error" id="product-voice-error" role="alert" hidden></div>
+                <div class="voice-preview-section">
+                    <label class="form-label">原始辨識文字</label>
+                    <div class="voice-transcript" id="product-voice-transcript">尚未辨識</div>
+                </div>
+                <div class="voice-preview-section">
+                    <label class="form-label">解析後的商品資料</label>
+                    <dl class="voice-preview-grid">
+                        <dt>商品名稱</dt><dd id="voice-preview-name">—</dd>
+                        <dt>規格</dt><dd id="voice-preview-specs">—</dd>
+                        <dt>售價</dt><dd id="voice-preview-price">—</dd>
+                        <dt>單位</dt><dd id="voice-preview-unit">—</dd>
+                    </dl>
+                </div>
+            </div>
+            <div class="modal-footer voice-modal-footer">
+                <button class="btn btn-secondary" onclick="closeProductVoiceModal()">取消</button>
+                <button class="btn btn-secondary" id="product-voice-retry-btn" onclick="restartProductVoice()" disabled><i class="fa-solid fa-rotate-right"></i> 重新錄音</button>
+                <button class="btn btn-primary" id="product-voice-apply-btn" onclick="applyProductVoiceToForm()" disabled>套用到表單</button>
             </div>
         </div>
     </div>
@@ -1085,6 +1126,7 @@
     <!-- 載入 SheetJS (用於 Excel 匯入與匯出) -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <!-- 載入核心 JS 檔案 -->
+    <script src="product-voice.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

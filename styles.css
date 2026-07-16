@@ -585,6 +585,37 @@ h1 {
     grid-column: 1 / -1;
 }
 
+.voice-input-row { display: flex; gap: 8px; align-items: stretch; }
+.product-voice-quick-btn { align-self: flex-end; min-height: 46px; white-space: nowrap; }
+.voice-input-row .form-control { min-width: 0; }
+.voice-field-btn { width: 46px; min-width: 46px; min-height: 46px; border: 2px solid var(--primary-orange); border-radius: var(--radius-md); background: var(--card-white); color: var(--primary-orange); cursor: pointer; font-size: 17px; transition: 0.2s ease; }
+.voice-field-btn:hover { background: var(--primary-orange-light); }
+.voice-field-btn.is-listening, .voice-record-btn.is-listening { animation: voice-pulse 1.2s infinite; background: var(--primary-coral); color: white; border-color: var(--primary-coral); }
+.voice-field-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.voice-support-message, .voice-error { margin: 8px 0 0; padding: 12px 14px; border-radius: var(--radius-md); background: #fff3e8; color: #9a4d00; font-weight: 700; }
+.voice-inline-status, .voice-status { min-height: 24px; margin: 8px 0 0; color: var(--text-muted); font-weight: 700; }
+.voice-modal-container { max-width: 620px; max-height: min(90vh, 760px); }
+.voice-modal-body { display: grid; gap: 18px; }
+.voice-example { padding: 14px 16px; border-radius: var(--radius-md); background: var(--primary-orange-light); line-height: 1.6; }
+.voice-record-panel { text-align: center; }
+.voice-record-btn { min-width: 160px; min-height: 48px; }
+.voice-preview-section { display: grid; gap: 8px; }
+.voice-transcript { min-height: 54px; padding: 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md); background: #fffdf9; white-space: pre-wrap; }
+.voice-preview-grid { display: grid; grid-template-columns: 100px 1fr; margin: 0; border: 1px solid var(--border-light); border-radius: var(--radius-md); overflow: hidden; }
+.voice-preview-grid dt, .voice-preview-grid dd { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border-light); }
+.voice-preview-grid dt { background: #fff7ed; font-weight: 800; }
+.voice-preview-grid dd:nth-last-child(-n+2), .voice-preview-grid dt:nth-last-child(-n+2) { border-bottom: 0; }
+@keyframes voice-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 122, 0, 0.35); } 50% { box-shadow: 0 0 0 10px rgba(255, 122, 0, 0); } }
+
+@media (max-width: 600px) {
+    .voice-modal-container { width: 94%; max-height: 92vh; }
+    .voice-modal-footer { flex-wrap: wrap; }
+    .voice-modal-footer .btn { flex: 1 1 130px; min-height: 44px; }
+    .page-header-actions > .button-group { width: 100%; }
+    .page-header-actions > .button-group .btn { flex: 1; }
+    .product-voice-quick-btn { width: 100%; order: 3; }
+}
+
 label.form-label {
     font-size: 14px;
     font-weight: 700;

@@ -12,12 +12,14 @@ async function verifySignature(rawBody, signature, secret) {
 }
 
 async function processTextEvent(event, dependencies) {
-    if (event.type !== "message" || event.message?.type !== "text" || event.source?.type !== "group") return;
+    if (event.type !== "message" || event.message?.type !== "text") return;
+    const conversationType = event.source?.type;
+    if (conversationType !== "group" && conversationType !== "room") return;
     const messageId = event.message.id;
     if (await dependencies.hasMessage(messageId)) return;
-    const groupId = event.source.groupId;
+    const groupId = event.source.groupId || event.source.roomId;
     const lineUserId = event.source.userId || "";
-    const displayName = await dependencies.getDisplayName(groupId, lineUserId);
+    const displayName = await dependencies.getDisplayName(conversationType, groupId, lineUserId);
     const parsed = LineOrder.parseMessage(event.message.text, await dependencies.getProductCodes());
     const customer = lineUserId ? await dependencies.findCustomer(lineUserId, displayName) : null;
     let status = parsed.status;
@@ -39,6 +41,7 @@ async function processTextEvent(event, dependencies) {
     };
     if (await dependencies.isSuspectedDuplicate(record)) record.status = "疑似重複";
     await dependencies.insertInbox(record);
+    console.log("LINE inbox stored", { sourceType: conversationType, status: record.status, itemCount: record.parsedItems.length });
 }
 
 async function handleWebhook(request, env, context, dependencies) {
@@ -47,7 +50,19 @@ async function handleWebhook(request, env, context, dependencies) {
     if (!valid) return new Response("Invalid signature", { status: 401 });
     let payload;
     try { payload = JSON.parse(rawBody); } catch (_error) { return new Response("Invalid JSON", { status: 400 }); }
-    const work = Promise.all((payload.events || []).map(event => processTextEvent(event, dependencies)));
+    console.log("LINE webhook received", (payload.events || []).map(event => ({
+        eventType: event.type,
+        sourceType: event.source?.type || "none",
+        messageType: event.message?.type || "none"
+    })));
+    const work = Promise.all((payload.events || []).map(async event => {
+        try {
+            await processTextEvent(event, dependencies);
+        } catch (error) {
+            console.error("LINE background processing failed", error);
+            throw error;
+        }
+    }));
     context.waitUntil(work);
     return new Response("OK", { status: 200 });
 }

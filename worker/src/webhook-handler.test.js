@@ -54,6 +54,19 @@ test("相同 messageId 重送不重複寫入", async () => {
     assert.equal(deps.inserted.length, 0);
 });
 
+test("多人聊天室 room 事件也能靜默寫入", async () => {
+    const roomEvent = event("A1", { source: { type: "room", roomId: "R1", userId: "U1" } });
+    const body = JSON.stringify({ events: [roomEvent] });
+    const deps = dependencies();
+    let background;
+    const request = new Request("https://example.com/webhooks/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const response = await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
+    await background;
+    assert.equal(response.status, 200);
+    assert.equal(deps.inserted.length, 1);
+    assert.equal(deps.inserted[0].groupId, "R1");
+});
+
 test("新 LINE userId 標示待綁定；格式錯誤只寫後台", async () => {
     for (const [text, expected, options] of [["A1", "待綁定", { customer: false }], ["+2", "待確認", {}]]) {
         const body = JSON.stringify({ events: [event(text)] });

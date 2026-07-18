@@ -1,3 +1,15 @@
+CREATE TABLE IF NOT EXISTS customers (
+  id TEXT PRIMARY KEY,
+  nickname TEXT NOT NULL,
+  line_user_id TEXT UNIQUE,
+  pickup_type TEXT
+);
+CREATE TABLE IF NOT EXISTS products (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  line_code TEXT UNIQUE
+);
 CREATE TABLE IF NOT EXISTS line_order_inbox (
   message_id TEXT PRIMARY KEY,
   group_id TEXT NOT NULL,
@@ -17,9 +29,6 @@ CREATE TABLE IF NOT EXISTS line_order_inbox (
 );
 CREATE INDEX IF NOT EXISTS idx_line_inbox_status_time ON line_order_inbox(status, message_time DESC);
 CREATE INDEX IF NOT EXISTS idx_line_inbox_duplicate ON line_order_inbox(group_id, line_user_id, normalized_message, message_time);
-ALTER TABLE customers ADD COLUMN line_user_id TEXT;
-ALTER TABLE customers ADD COLUMN pickup_type TEXT;
-ALTER TABLE products ADD COLUMN line_code TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_line_user_id ON customers(line_user_id) WHERE line_user_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_line_code ON products(line_code) WHERE line_code IS NOT NULL;
 CREATE TABLE IF NOT EXISTS orders (

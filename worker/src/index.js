@@ -1,7 +1,23 @@
 const { handleWebhook } = require("./webhook-handler.js");
 
-function json(value, status = 200) {
-    return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+function corsHeaders(request, env) {
+    const origin = request.headers.get("origin") || "";
+    if (!env.ADMIN_ORIGIN || origin !== env.ADMIN_ORIGIN) return {};
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-allow-headers": "authorization, content-type",
+        "access-control-allow-methods": "GET, POST, OPTIONS",
+        "vary": "Origin"
+    };
+}
+
+function json(value, status = 200, headers = {}) {
+    return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json; charset=utf-8", ...headers } });
+}
+
+function isAdmin(request, env) {
+    const authorization = request.headers.get("authorization") || "";
+    return Boolean(env.ADMIN_API_KEY) && authorization === `Bearer ${env.ADMIN_API_KEY}`;
 }
 
 function createDependencies(env) {
@@ -41,17 +57,20 @@ function createDependencies(env) {
 async function fetchHandler(request, env, context) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/webhooks/line") return handleWebhook(request, env, context, createDependencies(env));
+    const cors = corsHeaders(request, env);
+    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) return new Response(null, { status: 204, headers: cors });
+    if (url.pathname.startsWith("/api/") && !isAdmin(request, env)) return json({ error: "未授權" }, 401, cors);
     if (request.method === "GET" && url.pathname === "/api/line-inbox") {
         const rows = await env.DB.prepare("SELECT * FROM line_order_inbox ORDER BY message_time DESC LIMIT 500").all();
-        return json(rows.results);
+        return json(rows.results, 200, cors);
     }
     if (request.method === "POST" && /^\/api\/line-inbox\/[^/]+\/import$/.test(url.pathname)) {
         const messageId = decodeURIComponent(url.pathname.split("/")[3]);
         const inbox = await env.DB.prepare("SELECT * FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
-        if (!inbox) return json({ error: "找不到收件資料" }, 404);
-        if (inbox.status === "已轉正式訂單") return json({ imported: false });
-        if (inbox.status !== "已解析") return json({ error: "只有已解析資料可轉單" }, 409);
-        if (!inbox.customer_id) return json({ error: "請先綁定 LINE 客戶" }, 409);
+        if (!inbox) return json({ error: "找不到收件資料" }, 404, cors);
+        if (inbox.status === "已轉正式訂單") return json({ imported: false }, 200, cors);
+        if (inbox.status !== "已解析") return json({ error: "只有已解析資料可轉單" }, 409, cors);
+        if (!inbox.customer_id) return json({ error: "請先綁定 LINE 客戶" }, 409, cors);
         const orderId = crypto.randomUUID();
         const items = JSON.parse(inbox.parsed_items || "[]");
         const statements = [
@@ -61,9 +80,9 @@ async function fetchHandler(request, env, context) {
             env.DB.prepare("UPDATE line_order_inbox SET status = '已轉正式訂單', processed_at = CURRENT_TIMESTAMP WHERE message_id = ?").bind(messageId)
         ];
         await env.DB.batch(statements);
-        return json({ imported: true, orderId });
+        return json({ imported: true, orderId }, 200, cors);
     }
     return new Response("Not found", { status: 404 });
 }
 
-module.exports = { fetch: fetchHandler, createDependencies };
+module.exports = { fetch: fetchHandler, createDependencies, corsHeaders, isAdmin };

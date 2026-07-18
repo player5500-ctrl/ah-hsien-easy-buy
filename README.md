@@ -48,7 +48,7 @@ LINE ID：`0923317559`。LINE Bot 僅作背景收單，不是客服機器人。�
 
 1. 建立 D1，將既有 customers/products 表與 `worker/schema.sql` migration 套用至資料庫。若既有資料表已經包含新增欄位，請將對應 `ALTER TABLE` 從 migration 移除後再執行。
 2. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 database id。
-3. 使用 `wrangler secret put LINE_CHANNEL_SECRET` 與 `wrangler secret put LINE_CHANNEL_ACCESS_TOKEN` 儲存機密；不可放入前端或 Git。
+3. 使用 `wrangler secret put LINE_CHANNEL_SECRET`、`wrangler secret put LINE_CHANNEL_ACCESS_TOKEN` 與 `wrangler secret put ADMIN_API_KEY` 儲存機密；不可放入前端或 Git。另將 `ADMIN_ORIGIN` 設為 `https://player5500-ctrl.github.io`，限制只有管理網站可跨來源存取 API。
 4. 部署 Worker，將 LINE Developers 的 Webhook URL 設為 `https://<worker>/webhooks/line`。
 5. 在後台「LINE 靜默收單設定」填入 Worker 根網址。LINE Developers 後台需關閉自動回覆訊息與加入好友歡迎訊息。
 

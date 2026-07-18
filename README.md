@@ -29,3 +29,35 @@
 - **外部庫 (CDN)**：
   - **SheetJS (xlsx.full.min.js)**：用於 Excel 的解析與多工作表匯出。
   - **FontAwesome (CSS)**：系統圖示。
+
+## LINE 完全靜默收單
+
+LINE ID：`0923317559`。LINE Bot 僅作背景收單，不是客服機器人。後端只使用 LINE 的 Webhook 與群組成員資料查詢，不包含 Reply、Push、Broadcast、Multicast、Narrowcast 或任何排程通知 API。
+
+### 架構與流程
+
+1. LINE 將群組文字事件送至 Cloudflare Worker 的 `POST /webhooks/line`。
+2. Worker 以原始 request body 驗證 `x-line-signature`，驗證成功後立即建立背景工作並回傳 HTTP 200。
+3. 背景工作取得 groupId、userId、messageId、顯示名稱、原文與時間，完成 NFKC 全半形轉換、英文大寫及符號統一。
+4. 解析商品代碼及數量，對照客戶綁定，寫入 D1 的 `line_order_inbox`。
+5. `message_id` 是資料表主鍵，且採 `INSERT OR IGNORE`，LINE 重送不會重複寫入。
+6. 相同群組、使用者、標準化內容在五分鐘內再次出現時只標示「疑似重複」，不刪除也不合併。
+7. 管理者在「LINE 訂單收件匣」確認後，才以 D1 batch 原子操作建立正式 `orders` 與 `order_items`，並更新為「已轉正式訂單」。`orders.source_message_id` 另設 UNIQUE，避免同一收件資料被重複轉單。
+
+### 部署設定
+
+1. 建立 D1，將既有 customers/products 表與 `worker/schema.sql` migration 套用至資料庫。若既有資料表已經包含新增欄位，請將對應 `ALTER TABLE` 從 migration 移除後再執行。
+2. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 database id。
+3. 使用 `wrangler secret put LINE_CHANNEL_SECRET` 與 `wrangler secret put LINE_CHANNEL_ACCESS_TOKEN` 儲存機密；不可放入前端或 Git。
+4. 部署 Worker，將 LINE Developers 的 Webhook URL 設為 `https://<worker>/webhooks/line`。
+5. 在後台「LINE 靜默收單設定」填入 Worker 根網址。LINE Developers 後台需關閉自動回覆訊息與加入好友歡迎訊息。
+
+### 本機驗證
+
+```bash
+npm install
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```

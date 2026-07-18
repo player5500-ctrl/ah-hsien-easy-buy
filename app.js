@@ -2964,11 +2964,15 @@ function getLineApiBase() {
 function renderLineSettings() {
     const input = document.getElementById('line-api-base');
     if (input) input.value = getLineApiBase();
+    const keyInput = document.getElementById('line-admin-api-key');
+    if (keyInput) keyInput.value = localStorage.getItem('easygo_line_admin_api_key') || '';
 }
 
 function saveLineSettings() {
     const value = document.getElementById('line-api-base').value.trim().replace(/\/$/, '');
+    const apiKey = document.getElementById('line-admin-api-key').value.trim();
     localStorage.setItem('easygo_line_api_base', value);
+    localStorage.setItem('easygo_line_admin_api_key', apiKey);
     alert('LINE 後台連線設定已儲存。靜默模式維持強制啟用。');
 }
 
@@ -3006,7 +3010,7 @@ async function loadLineInbox() {
     const base = getLineApiBase();
     if (!base) { state.lineInbox = []; renderLineInbox(); return; }
     try {
-        const response = await fetch(`${base}/api/line-inbox`);
+        const response = await fetch(`${base}/api/line-inbox`, { headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         state.lineInbox = await response.json();
         renderLineInbox();
@@ -3019,7 +3023,10 @@ async function loadLineInbox() {
 
 async function importLineInbox(encodedMessageId) {
     if (!confirm('確定將這筆 LINE 收件資料轉為正式訂單？')) return;
-    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, { method: 'POST' });
+    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` }
+    });
     const result = await response.json();
     if (!response.ok) { alert(result.error || '轉單失敗'); return; }
     await loadLineInbox();

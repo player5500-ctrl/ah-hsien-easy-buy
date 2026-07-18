@@ -44,6 +44,13 @@
     --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+.silent-mode-banner { background: #ecfdf5; border: 1px solid #10b981; border-radius: 10px; color: #065f46; margin-bottom: 20px; padding: 16px; }
+.silent-mode-banner p { margin: 8px 0 0; }
+.line-inbox-table { min-width: 1500px; }
+.line-inbox-table td { vertical-align: top; white-space: normal; }
+.line-inbox-table small { display: block; color: #64748b; margin-top: 4px; word-break: break-all; }
+.line-status { display: inline-block; background: #eef2ff; border-radius: 999px; color: #3730a3; font-weight: 700; padding: 4px 9px; white-space: nowrap; }
+
 /* 基礎重設 */
 * {
     box-sizing: border-box;

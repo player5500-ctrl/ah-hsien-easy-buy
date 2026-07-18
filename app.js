@@ -8,6 +8,7 @@ let state = {
     products: [],
     customers: [],
     orders: [],
+    lineInbox: [],
     activeGroupBuyId: "" // 當前選取的團購活動 ID
 };
 
@@ -318,6 +319,10 @@ function switchView(viewId, subviewAction = '') {
         renderDashboard();
     } else if (viewId === 'group-buys') {
         renderGroupBuys();
+    } else if (viewId === 'line-inbox') {
+        loadLineInbox();
+    } else if (viewId === 'line-settings') {
+        renderLineSettings();
     } else if (viewId === 'orders') {
         if (subviewAction === 'by-customer') {
             toggleOrderViewMode('by-customer');
@@ -2947,4 +2952,76 @@ function openModal(id) {
 function closeModal(id) {
     const modal = document.getElementById(id);
     if (modal) modal.classList.remove('show');
+}
+
+// ==========================================================================
+// 10. LINE 完全靜默收單後台（僅讀取與人工轉單，不含任何發訊功能）
+// ==========================================================================
+function getLineApiBase() {
+    return (localStorage.getItem('easygo_line_api_base') || '').replace(/\/$/, '');
+}
+
+function renderLineSettings() {
+    const input = document.getElementById('line-api-base');
+    if (input) input.value = getLineApiBase();
+}
+
+function saveLineSettings() {
+    const value = document.getElementById('line-api-base').value.trim().replace(/\/$/, '');
+    localStorage.setItem('easygo_line_api_base', value);
+    alert('LINE 後台連線設定已儲存。靜默模式維持強制啟用。');
+}
+
+function escapeLineText(value) {
+    const div = document.createElement('div');
+    div.textContent = value == null ? '' : String(value);
+    return div.innerHTML;
+}
+
+function renderLineInbox() {
+    const tbody = document.getElementById('line-inbox-tbody');
+    if (!tbody) return;
+    if (!state.lineInbox.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料，或尚未設定 Worker API 網址。</td></tr>';
+        return;
+    }
+    tbody.innerHTML = state.lineInbox.map(row => {
+        let items = row.parsed_items || row.parsedItems || [];
+        if (typeof items === 'string') { try { items = JSON.parse(items); } catch (_error) { items = []; } }
+        const status = row.status || '已接收';
+        const canImport = status === '已解析' && Boolean(row.customer_id || row.customerId);
+        return `<tr>
+            <td><strong>${escapeLineText(row.display_name || row.displayName)}</strong><small>${escapeLineText(row.line_user_id || row.lineUserId)}</small></td>
+            <td>${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small></td>
+            <td>${escapeLineText(row.raw_message || row.rawMessage)}</td><td>${escapeLineText(row.normalized_message || row.normalizedMessage)}</td>
+            <td>${items.map(item => `${escapeLineText(item.productCode)} × ${Number(item.quantity)}`).join('<br>')}</td>
+            <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
+            <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
+            <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInbox('${encodeURIComponent(row.message_id || row.messageId)}')">轉正式訂單</button></td>
+        </tr>`;
+    }).join('');
+}
+
+async function loadLineInbox() {
+    const base = getLineApiBase();
+    if (!base) { state.lineInbox = []; renderLineInbox(); return; }
+    try {
+        const response = await fetch(`${base}/api/line-inbox`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        state.lineInbox = await response.json();
+        renderLineInbox();
+    } catch (error) {
+        state.lineInbox = [];
+        renderLineInbox();
+        alert(`無法讀取 LINE 訂單收件匣：${error.message}`);
+    }
+}
+
+async function importLineInbox(encodedMessageId) {
+    if (!confirm('確定將這筆 LINE 收件資料轉為正式訂單？')) return;
+    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) { alert(result.error || '轉單失敗'); return; }
+    await loadLineInbox();
+    alert(result.imported ? '已轉為正式訂單。' : '此訊息先前已完成轉單。');
 }

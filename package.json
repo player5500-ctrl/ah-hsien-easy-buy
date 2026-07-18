@@ -1,0 +1,16 @@
+{
+  "name": "ah-hsien-easy-buy",
+  "version": "2.0.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "typecheck": "node --check app.js && node --check product-voice.js && node --check line-order.js && node --check worker/src/index.js",
+    "lint": "eslint .",
+    "test": "node --test",
+    "build": "node scripts/build.js"
+  },
+  "devDependencies": {
+    "eslint": "^9.31.0",
+    "globals": "^16.3.0"
+  }
+}

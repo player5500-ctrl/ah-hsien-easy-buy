@@ -25,9 +25,9 @@ function createDependencies(env) {
         async hasMessage(messageId) {
             return Boolean(await env.DB.prepare("SELECT 1 FROM line_order_inbox WHERE message_id = ? LIMIT 1").bind(messageId).first());
         },
-        async getDisplayName(groupId, userId) {
+        async getDisplayName(conversationType, conversationId, userId) {
             if (!userId || !env.LINE_CHANNEL_ACCESS_TOKEN) return "";
-            const response = await fetch(`https://api.line.me/v2/bot/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`, {
+            const response = await fetch(`https://api.line.me/v2/bot/${conversationType}/${encodeURIComponent(conversationId)}/member/${encodeURIComponent(userId)}`, {
                 headers: { authorization: `Bearer ${env.LINE_CHANNEL_ACCESS_TOKEN}` }
             });
             return response.ok ? (await response.json()).displayName || "" : "";

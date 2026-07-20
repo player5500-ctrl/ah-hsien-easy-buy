@@ -1,3 +1,4 @@
+/* global openModal, closeModal, state, resetImportWizard, saveStateToStorage, switchView */
 // =====================================================================
 // 截圖匯入訂單（chat-import.js）
 // 把團購聊天截圖（貼文＋樓下 A+1/B+1 回覆）辨識成文字、解析成訂單。

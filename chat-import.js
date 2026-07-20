@@ -226,6 +226,18 @@ if (typeof document !== "undefined") {
                 $("chat-import-image-name").textContent = "已選擇：" + selectedImageFile.name;
             }
         };
+        // 與 Excel 匯入精靈共用入口：第一步選「訂單-聊天截圖／文字」即開本 modal
+        document.addEventListener("DOMContentLoaded", function () {
+            const sel = document.getElementById("excel-import-type");
+            if (!sel) return;
+            sel.addEventListener("change", function () {
+                if (sel.value !== "orders-chat") return;
+                sel.value = "";
+                if (typeof resetImportWizard === "function") resetImportWizard();
+                window.openChatImportModal();
+            });
+        });
+
         document.addEventListener("paste", function (e) {
             const modal = $("chat-import-modal");
             if (!modal || !modal.classList.contains("show")) return;

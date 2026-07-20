@@ -57,7 +57,7 @@
                 <li class="menu-item" data-view="excel">
                     <a onclick="switchView('excel')">
                         <i class="fa-solid fa-file-excel"></i>
-                        <span>資料匯入／匯出</span>
+                        <span>資料匯出</span>
                     </a>
                 </li>
                 <li class="menu-item" data-view="line-inbox">
@@ -119,8 +119,7 @@
                         </div>
                         <div class="button-group">
                             <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
-                            <button class="btn btn-secondary" onclick="switchView('excel', 'import')"><i class="fa-solid fa-file-import"></i> 匯入 Excel</button>
-                            <button class="btn btn-secondary" onclick="openChatImportModal()"><i class="fa-solid fa-image"></i> 截圖匯入訂單</button>
+                            <!-- 2026-07-20 匯入下架：匯入 Excel／截圖匯入按鈕移除，訂單以 LINE 訂單收件匣為主 -->
                             <button class="btn btn-secondary" onclick="switchView('excel', 'export')"><i class="fa-solid fa-file-export"></i> 匯出 Excel</button>
                         </div>
                     </div>
@@ -271,10 +270,7 @@
                             <h1>訂單管理</h1>
                             <p class="page-subtitle">新增訂單、狀態批次修改與包貨核對</p>
                         </div>
-                        <div>
-                            <button class="btn btn-secondary" onclick="openChatImportModal()"><i class="fa-solid fa-image"></i> 截圖匯入訂單</button>
-                            <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
-                        </div>
+                        <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
                     </div>
 
                     <!-- 模式切換按鈕 -->
@@ -593,13 +589,13 @@
                 <section id="excel-view" class="view-section" style="display: none;">
                     <div class="page-header-actions">
                         <div>
-                            <h1>資料匯入／匯出</h1>
-                            <p class="page-subtitle">透過 Excel 或聊天截圖快速批次更新資料，或匯出團購統計總表</p>
+                            <h1>資料匯出</h1>
+                            <p class="page-subtitle">匯出團購統計總表（訂單來源以 LINE 訂單收件匣為主）</p>
                         </div>
                     </div>
 
-                    <!-- 匯入與匯出選項卡 -->
-                    <div class="import-steps" style="margin-bottom: 24px;">
+                    <!-- 匯入與匯出選項卡（2026-07-20 匯入下架：隱藏但保留 DOM，避免 toggleExcelSubtab 取不到元素） -->
+                    <div class="import-steps" style="margin-bottom: 24px; display: none;">
                         <div class="import-step active" id="tab-excel-import" onclick="toggleExcelSubtab('import')">
                             <i class="fa-solid fa-file-arrow-up"></i> 資料匯入精靈
                         </div>

@@ -336,13 +336,8 @@ function switchView(viewId, subviewAction = '') {
     } else if (viewId === 'products') {
         renderProducts();
     } else if (viewId === 'excel') {
-        if (subviewAction === 'import') {
-            toggleExcelSubtab('import');
-        } else if (subviewAction === 'export') {
-            toggleExcelSubtab('export');
-        } else {
-            toggleExcelSubtab('import');
-        }
+        // 2026-07-20 匯入功能下架（訂單以 LINE 訂單收件匣為主），一律顯示匯出
+        toggleExcelSubtab('export');
     }
     
     window.scrollTo(0, 0);

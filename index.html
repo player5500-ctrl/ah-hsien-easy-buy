@@ -108,6 +108,7 @@
                         <div class="button-group">
                             <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
                             <button class="btn btn-secondary" onclick="switchView('excel', 'import')"><i class="fa-solid fa-file-import"></i> 匯入 Excel</button>
+                            <button class="btn btn-secondary" onclick="openChatImportModal()"><i class="fa-solid fa-image"></i> 截圖匯入訂單</button>
                             <button class="btn btn-secondary" onclick="switchView('excel', 'export')"><i class="fa-solid fa-file-export"></i> 匯出 Excel</button>
                         </div>
                     </div>
@@ -258,7 +259,10 @@
                             <h1>訂單管理</h1>
                             <p class="page-subtitle">新增訂單、狀態批次修改與包貨核對</p>
                         </div>
-                        <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
+                        <div>
+                            <button class="btn btn-secondary" onclick="openChatImportModal()"><i class="fa-solid fa-image"></i> 截圖匯入訂單</button>
+                            <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
+                        </div>
                     </div>
 
                     <!-- 模式切換按鈕 -->
@@ -1123,10 +1127,59 @@
         </div>
     </div>
 
+    <!-- 截圖匯入訂單 Modal -->
+    <div class="modal-backdrop" id="chat-import-modal" aria-hidden="true">
+        <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="chat-import-title" style="max-width:760px;">
+            <div class="modal-header">
+                <h3 class="modal-title" id="chat-import-title"><i class="fa-solid fa-image text-orange"></i> 截圖匯入訂單</h3>
+                <button class="modal-close" onclick="closeChatImportModal()" aria-label="關閉截圖匯入">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- 步驟一：圖片 -->
+                <div class="form-group">
+                    <label class="form-label">步驟一：選擇團購聊天截圖（含貼文品項與樓下 A+1／B+1 回覆）</label>
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <input type="file" id="chat-import-file" accept="image/*" onchange="handleChatImportFile(this)">
+                        <button class="btn btn-primary" id="chat-import-ocr-btn" onclick="runChatImportOCR()"><i class="fa-solid fa-wand-magic-sparkles"></i> 開始辨識文字 (OCR)</button>
+                    </div>
+                    <p id="chat-import-image-name" style="margin:6px 0 0; color:#888; font-size:0.85em;">尚未選擇圖片（也可直接把截圖 Ctrl+V 貼進本視窗，或跳過圖片直接貼文字）</p>
+                    <p id="chat-import-status" role="status" aria-live="polite" style="margin:4px 0 0; color:#e67e22; font-weight:bold;"></p>
+                </div>
+                <!-- 步驟二：文字核對 -->
+                <div class="form-group">
+                    <label class="form-label">步驟二：核對／修正辨識文字（也可直接把聊天文字貼在這裡）</label>
+                    <textarea id="chat-import-text" class="form-control" rows="8" placeholder="範例格式：&#10;【乖乖】好運箱/開運箱 $120&#10;A.【乖乖好運箱-椰子】&#10;B.【乖乖開運箱-五香】&#10;佩芳&#10;B+1&#10;馮淑真&#10;A+1 B+1" style="font-family:monospace;"></textarea>
+                    <button class="btn btn-primary" style="margin-top:8px;" onclick="parseChatImportTextNow()"><i class="fa-solid fa-list-check"></i> 解析文字 → 產生訂單預覽</button>
+                </div>
+                <!-- 步驟三：預覽 -->
+                <div id="chat-import-preview-section" style="display:none;">
+                    <div class="form-group">
+                        <label class="form-label">步驟三：確認訂單內容（可直接修改），選擇匯入的團購活動</label>
+                        <select id="chat-import-gb-select" class="form-control" style="max-width:360px;"></select>
+                    </div>
+                    <div id="chat-import-warnings" style="display:none; background:#fff6e5; border:1px solid #f0c36d; border-radius:6px; padding:10px; margin-bottom:10px; font-size:0.9em;"></div>
+                    <div class="table-responsive">
+                        <table class="table-custom">
+                            <thead><tr><th>訂購人暱稱</th><th>品項</th><th>數量</th><th></th></tr></thead>
+                            <tbody id="chat-import-preview-tbody"></tbody>
+                        </table>
+                    </div>
+                    <button class="btn btn-secondary" style="margin-top:6px;" onclick="addChatImportRow()"><i class="fa-solid fa-plus"></i> 手動加一列</button>
+                    <p style="margin:8px 0 0; color:#888; font-size:0.85em;">匯入規則：暱稱相同沿用既有客戶，否則自動建立；品項不存在會自動建立商品；同團購同客戶已有訂單將「覆寫」明細（會先確認）。新訂單預設自取／未付款，金額「不含」外送運費（如需外送請在訂單編輯調整）。</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeChatImportModal()">取消</button>
+                <button class="btn btn-primary" id="chat-import-execute-btn" disabled onclick="executeChatImport()"><i class="fa-solid fa-circle-check"></i> 確認匯入訂單</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 載入 SheetJS (用於 Excel 匯入與匯出) -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <!-- 載入核心 JS 檔案 -->
     <script src="product-voice.js"></script>
+    <script src="chat-import.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

@@ -2,24 +2,48 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const LineOrder = require("./line-order.js");
 
-test("A1 解析為 A 商品 1 組", () => {
-    assert.deepEqual(LineOrder.parseMessage("A1", ["A"]), {
-        normalized: "A1", items: [{ productCode: "A", quantity: 1 }], status: "已解析", errorReason: ""
+const catalog = ["P023-A", "P023-B", "A"];
+
+test("解析記事本商品代碼與多口味數量", () => {
+    assert.deepEqual(LineOrder.parseMessage("P023 A+3 B+1", catalog), {
+        normalized: "P023 A+3 B+1",
+        items: [
+            { productCode: "P023-A", quantity: 3 },
+            { productCode: "P023-B", quantity: 1 }
+        ],
+        status: LineOrder.STATUS.READY,
+        errorReason: "",
+        action: "create",
+        targetProductPrefix: "P023"
     });
 });
 
-test("全形小寫與全形加號會標準化並解析", () => {
-    assert.deepEqual(LineOrder.parseMessage("ａ＋２", ["A"]).items, [{ productCode: "A", quantity: 2 }]);
-    assert.equal(LineOrder.normalizeMessage("ａ＋２"), "A+2");
+test("相容完整商品碼、舊格式及全形符號", () => {
+    assert.deepEqual(LineOrder.parseMessage("P023-A+2", catalog).items, [{ productCode: "P023-A", quantity: 2 }]);
+    assert.deepEqual(LineOrder.parseMessage("A1", catalog).items, [{ productCode: "A", quantity: 1 }]);
+    assert.equal(LineOrder.normalizeMessage("ｐ０２３　ａ＋２"), "P023 A+2");
 });
 
-test("只有數量視為待確認；不存在商品視為格式錯誤", () => {
-    assert.equal(LineOrder.parseMessage("+2", ["A"]).status, "待確認");
-    assert.equal(LineOrder.parseMessage("Z+2", ["A"]).status, "格式錯誤");
+test("解析更正與取消命令", () => {
+    const correction = LineOrder.parseMessage("更正 P023 A+2", catalog);
+    assert.equal(correction.action, "replace");
+    assert.equal(correction.targetProductPrefix, "P023");
+    assert.deepEqual(correction.items, [{ productCode: "P023-A", quantity: 2 }]);
+
+    const cancellation = LineOrder.parseMessage("取消 P023", catalog);
+    assert.equal(cancellation.action, "cancel");
+    assert.equal(cancellation.status, LineOrder.STATUS.READY);
+    assert.equal(cancellation.targetProductPrefix, "P023");
 });
 
-test("五分鐘內相同客戶與內容標示為疑似重複", () => {
-    const current = { messageId: "2", groupId: "G", lineUserId: "U", normalizedMessage: "A1", messageTime: "2026-07-18T10:03:00Z" };
+test("拒絕未知商品、未知口味與缺少商品碼", () => {
+    assert.equal(LineOrder.parseMessage("P999 A+2", catalog).status, LineOrder.STATUS.UNKNOWN_PRODUCT);
+    assert.equal(LineOrder.parseMessage("P023 C+2", catalog).status, LineOrder.STATUS.UNKNOWN_PRODUCT);
+    assert.equal(LineOrder.parseMessage("+2", catalog).status, LineOrder.STATUS.INCOMPLETE);
+});
+
+test("五分鐘內相同訊息標示為疑似重複", () => {
+    const current = { messageId: "2", groupId: "G", lineUserId: "U", normalizedMessage: "P023 A+1", messageTime: "2026-07-18T10:03:00Z" };
     const existing = [{ ...current, messageId: "1", messageTime: "2026-07-18T10:00:00Z" }];
     assert.equal(LineOrder.isSuspectedDuplicate(current, existing), true);
 });

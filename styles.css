@@ -49,6 +49,9 @@
 .line-inbox-table { min-width: 1500px; }
 .line-inbox-table td { vertical-align: top; white-space: normal; }
 .line-inbox-table small { display: block; color: #64748b; margin-top: 4px; word-break: break-all; }
+.line-action { display: inline-block; border-radius: 999px; padding: 2px 8px; margin-bottom: 4px; font-size: 0.78rem; font-weight: 700; background: #e2e8f0; color: #334155; }
+.line-action-replace { background: #fef3c7; color: #92400e; }
+.line-action-cancel { background: #fee2e2; color: #991b1b; }
 .line-status { display: inline-block; background: #eef2ff; border-radius: 999px; color: #3730a3; font-weight: 700; padding: 4px 9px; white-space: nowrap; }
 
 /* 基礎重設 */

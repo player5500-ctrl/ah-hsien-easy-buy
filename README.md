@@ -1,59 +1,63 @@
-# 阿賢Easy購管理系統
+# 阿賢 Easy 購
 
-這是一個專為夫妻兩人共同操作的輕量化團購管理系統。
+團購訂單管理網站，前端部署於 GitHub Pages；LINE 群組靜默收單由 Cloudflare Worker、D1 與 LINE Messaging API 處理。
 
-## 特色功能
+## LINE 靜默收單
 
-1. **首頁儀表板**：快速查看當前活動摘要，包含訂單總金額、未付款、未包貨等指標。
-2. **團購活動管理**：建立與修改團購，支援一鍵複製前一團商品。
-3. **商品管理**：管理商品清單、規格、價格，支援商品停用（防刪除）。
-4. **客戶管理**：管理客戶暱稱、電話、地址。具備電話去格式重複判定與編號自動生成。
-5. **訂單管理**：完整的新增、修改、取消訂單流程，支援自取/外送配送邏輯與批次狀態修改。
-6. **依客戶整理與包貨核對**：依客戶暱稱整合其訂單明細，並提供商品包貨勾選，全部勾選後可一鍵完成包貨。
-7. **依商品整理**：統計每樣商品的訂購總量，便於向廠商叫貨與點貨。
-8. **Excel 匯入與匯出**：（2026-07-20 起「匯入」入口下架，僅保留匯出；訂單來源以 LINE 訂單收件匣為主。匯入程式碼保留於 repo，需要時可恢復入口。）
-   - 支援客戶、商品、訂單之 `.xlsx` 或 `.csv` 匯入，提供詳細的格式檢查與錯誤定位。
-   - 支援訂單資料多行商品合併匯入。
-   - 支援依團購活動匯出包含四個工作表（客戶訂購總表、客戶商品明細、商品數量統計、外送及自取名單）的完整 Excel 報表。
-9. **截圖匯入訂單**（`chat-import.js`，2026-07-20 起入口下架、程式保留）：上傳或貼上團購聊天截圖（貼文品項＋樓下 A+1/B+1 回覆），瀏覽器內 OCR（Tesseract.js CDN，首次使用需網路下載中文模型）辨識成文字 → 人工核對修正 → 解析成訂單預覽 → 一鍵匯入。也可跳過圖片直接貼聊天文字。暱稱自動對應/建立客戶、品項自動對應/建立商品；同團購同客戶已有訂單會覆寫明細（匯入前確認）。解析器測試：`node --test chat-import.test.js`。
+LINE 官方帳號加入群組後，Worker 只接收群組聊天室的新訊息，不會傳送 Reply、Push、Broadcast、Multicast 或 Narrowcast 訊息。
 
-## 執行與開發
+### 商品代碼
 
-本系統為純前端單頁面應用程式 (SPA)，完全免安裝、免伺服器。
+同一篇記事本的不同口味應建立成不同商品，`products.line_code` 使用共同前綴：
 
-- **預覽方式**：在瀏覽器中直接開啟 `index.html` 即可使用。
-- **資料保存**：所有資料均自動存儲於瀏覽器的 `localStorage` 中。
+| 商品 | `line_code` |
+|---|---|
+| 臭豆腐－原味 | `P023-A` |
+| 臭豆腐－辣味 | `P023-B` |
 
-## 技術架構
+記事本請提示客人在群組聊天室留言：
 
-- **核心**：HTML5, CSS3, JavaScript (ES6)
-- **外部庫 (CDN)**：
-  - **SheetJS (xlsx.full.min.js)**：用於 Excel 的解析與多工作表匯出。
-  - **FontAwesome (CSS)**：系統圖示。
+```text
+P023 A+3
+P023 A+1 B+1
+更正 P023 A+2
+取消 P023
+```
 
-## LINE 完全靜默收單
+所有命令都先進入「LINE 訂單收件匣」，由管理員確認後才新增、更正或取消正式訂單。系統會依 `messageId` 與 `webhookEventId` 去重，並處理 LINE 收回訊息。
 
-LINE ID：`0923317559`。LINE Bot 僅作背景收單，不是客服機器人。後端只使用 LINE 的 Webhook 與群組成員資料查詢，不包含 Reply、Push、Broadcast、Multicast、Narrowcast 或任何排程通知 API。
+## Worker 部署
 
-### 架構與流程
+1. 建立 Cloudflare D1 資料庫。
+2. 新資料庫執行 `worker/schema.sql`；舊版資料庫先備份，再執行 `worker/migration-002-line-commands.sql`。
+3. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 `database_id`。
+4. 設定機密：
 
-1. LINE 將群組文字事件送至 Cloudflare Worker 的 `POST /webhooks/line`。
-2. Worker 以原始 request body 驗證 `x-line-signature`，驗證成功後立即建立背景工作並回傳 HTTP 200。
-3. 背景工作取得 groupId、userId、messageId、顯示名稱、原文與時間，完成 NFKC 全半形轉換、英文大寫及符號統一。
-4. 解析商品代碼及數量，對照客戶綁定，寫入 D1 的 `line_order_inbox`。
-5. `message_id` 是資料表主鍵，且採 `INSERT OR IGNORE`，LINE 重送不會重複寫入。
-6. 相同群組、使用者、標準化內容在五分鐘內再次出現時只標示「疑似重複」，不刪除也不合併。
-7. 管理者在「LINE 訂單收件匣」確認後，才以 D1 batch 原子操作建立正式 `orders` 與 `order_items`，並更新為「已轉正式訂單」。`orders.source_message_id` 另設 UNIQUE，避免同一收件資料被重複轉單。
+```bash
+npx wrangler secret put LINE_CHANNEL_SECRET
+npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+npx wrangler secret put ADMIN_API_KEY
+```
 
-### 部署設定
+5. 在 `wrangler.toml` 設定：
 
-1. 建立 D1，將既有 customers/products 表與 `worker/schema.sql` migration 套用至資料庫。若既有資料表已經包含新增欄位，請將對應 `ALTER TABLE` 從 migration 移除後再執行。
-2. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 database id。
-3. 使用 `wrangler secret put LINE_CHANNEL_SECRET`、`wrangler secret put LINE_CHANNEL_ACCESS_TOKEN` 與 `wrangler secret put ADMIN_API_KEY` 儲存機密；不可放入前端或 Git。另將 `ADMIN_ORIGIN` 設為 `https://player5500-ctrl.github.io`，限制只有管理網站可跨來源存取 API。
-4. 部署 Worker，將 LINE Developers 的 Webhook URL 設為 `https://<worker>/webhooks/line`。
-5. 在後台「LINE 靜默收單設定」填入 Worker 根網址。LINE Developers 後台需關閉自動回覆訊息與加入好友歡迎訊息。
+```toml
+[vars]
+ADMIN_ORIGIN = "https://player5500-ctrl.github.io"
+```
 
-### 本機驗證
+6. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：
+
+```text
+https://<worker-domain>/webhooks/line
+```
+
+7. 在 LINE Developers 啟用 Webhook、Webhook redelivery，以及「Allow bot to join group chats」。
+8. 在網站「LINE 靜默收單設定」填入 Worker 網址與 `ADMIN_API_KEY`。
+
+Channel Secret、Channel Access Token 與管理 API 金鑰不得寫入 GitHub Pages 或提交到 Git。
+
+## 本機檢查
 
 ```bash
 npm install

@@ -11,21 +11,30 @@ async function verifySignature(rawBody, signature, secret) {
     return mismatch === 0;
 }
 
+async function processUnsendEvent(event, dependencies) {
+    const messageId = event.unsend?.messageId;
+    if (!messageId || !dependencies.markUnsent) return;
+    await dependencies.markUnsent(messageId, new Date(event.timestamp).toISOString());
+}
+
 async function processTextEvent(event, dependencies) {
     if (event.type !== "message" || event.message?.type !== "text") return;
     const conversationType = event.source?.type;
     if (conversationType !== "group" && conversationType !== "room") return;
     const messageId = event.message.id;
-    if (await dependencies.hasMessage(messageId)) return;
+    if (await dependencies.hasMessage(messageId, event.webhookEventId || "")) return;
+
     const groupId = event.source.groupId || event.source.roomId;
     const lineUserId = event.source.userId || "";
     const displayName = await dependencies.getDisplayName(conversationType, groupId, lineUserId);
     const parsed = LineOrder.parseMessage(event.message.text, await dependencies.getProductCodes());
     const customer = lineUserId ? await dependencies.findCustomer(lineUserId, displayName) : null;
     let status = parsed.status;
-    if (!customer && status !== "格式錯誤" && status !== "待確認") status = "待綁定";
+    if (!customer && status === LineOrder.STATUS.READY) status = LineOrder.STATUS.CUSTOMER_UNMATCHED;
+
     const record = {
         messageId,
+        webhookEventId: event.webhookEventId || "",
         groupId,
         lineUserId,
         displayName,
@@ -34,14 +43,21 @@ async function processTextEvent(event, dependencies) {
         rawMessage: event.message.text,
         normalizedMessage: parsed.normalized,
         parsedItems: parsed.items,
+        action: parsed.action,
+        targetProductPrefix: parsed.targetProductPrefix,
         pickupType: customer?.pickupType || "",
         messageTime: new Date(event.timestamp).toISOString(),
         status,
         errorReason: parsed.errorReason
     };
-    if (await dependencies.isSuspectedDuplicate(record)) record.status = "疑似重複";
+    if (await dependencies.isSuspectedDuplicate(record)) record.status = LineOrder.STATUS.DUPLICATE;
     await dependencies.insertInbox(record);
-    console.log("LINE inbox stored", { sourceType: conversationType, status: record.status, itemCount: record.parsedItems.length });
+    console.log("LINE inbox stored", { sourceType: conversationType, action: record.action, status: record.status, itemCount: record.parsedItems.length });
+}
+
+async function processEvent(event, dependencies) {
+    if (event.type === "unsend") return processUnsendEvent(event, dependencies);
+    return processTextEvent(event, dependencies);
 }
 
 async function handleWebhook(request, env, context, dependencies) {
@@ -50,21 +66,12 @@ async function handleWebhook(request, env, context, dependencies) {
     if (!valid) return new Response("Invalid signature", { status: 401 });
     let payload;
     try { payload = JSON.parse(rawBody); } catch (_error) { return new Response("Invalid JSON", { status: 400 }); }
-    console.log("LINE webhook received", (payload.events || []).map(event => ({
-        eventType: event.type,
-        sourceType: event.source?.type || "none",
-        messageType: event.message?.type || "none"
-    })));
     const work = Promise.all((payload.events || []).map(async event => {
-        try {
-            await processTextEvent(event, dependencies);
-        } catch (error) {
-            console.error("LINE background processing failed", error);
-            throw error;
-        }
+        try { await processEvent(event, dependencies); }
+        catch (error) { console.error("LINE background processing failed", error); throw error; }
     }));
     context.waitUntil(work);
     return new Response("OK", { status: 200 });
 }
 
-module.exports = { verifySignature, processTextEvent, handleWebhook };
+module.exports = { verifySignature, processTextEvent, processUnsendEvent, processEvent, handleWebhook };

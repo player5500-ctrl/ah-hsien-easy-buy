@@ -3027,3 +3027,67 @@ async function importLineInbox(encodedMessageId) {
     await loadLineInbox();
     alert(result.imported ? '已轉為正式訂單。' : '此訊息先前已完成轉單。');
 }
+
+// LINE 收件匣 v2：支援「P023 A+3」、更正與取消命令。
+// 這些同名函式刻意放在舊版之後，讓既有 onclick 與頁面生命週期不必改動。
+function renderLineInboxV2() {
+    const tbody = document.getElementById('line-inbox-tbody');
+    if (!tbody) return;
+    if (!state.lineInbox.length) {
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料，請先設定 Worker API。</td></tr>';
+        return;
+    }
+    tbody.innerHTML = state.lineInbox.map(row => {
+        let items = row.parsed_items || row.parsedItems || [];
+        if (typeof items === 'string') { try { items = JSON.parse(items); } catch (_error) { items = []; } }
+        const status = row.status || '待處理';
+        const action = row.action || 'create';
+        const actionLabels = { create: '新增', replace: '更正', cancel: '取消' };
+        const canImport = status === '可匯入' && Boolean(row.customer_id || row.customerId);
+        const itemText = items.length
+            ? items.map(item => `${escapeLineText(item.productCode)} × ${Number(item.quantity)}`).join('<br>')
+            : escapeLineText(row.target_product_prefix || '');
+        return `<tr>
+            <td><strong>${escapeLineText(row.display_name || row.displayName)}</strong><small>${escapeLineText(row.line_user_id || row.lineUserId)}</small></td>
+            <td>${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small></td>
+            <td><span class="line-action line-action-${escapeLineText(action)}">${actionLabels[action] || action}</span><br>${escapeLineText(row.raw_message || row.rawMessage)}</td>
+            <td>${escapeLineText(row.normalized_message || row.normalizedMessage)}</td>
+            <td>${itemText}</td>
+            <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
+            <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
+            <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInboxV2('${encodeURIComponent(row.message_id || row.messageId)}')">${action === 'cancel' ? '確認取消' : action === 'replace' ? '確認更正' : '轉正式訂單'}</button></td>
+        </tr>`;
+    }).join('');
+}
+
+async function loadLineInboxV2() {
+    const base = getLineApiBase();
+    if (!base) { state.lineInbox = []; renderLineInboxV2(); return; }
+    try {
+        const response = await fetch(`${base}/api/line-inbox`, { headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` } });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        state.lineInbox = await response.json();
+        renderLineInboxV2();
+    } catch (error) {
+        state.lineInbox = [];
+        renderLineInboxV2();
+        alert(`無法讀取 LINE 訂單收件匣：${error.message}`);
+    }
+}
+
+async function importLineInboxV2(encodedMessageId) {
+    if (!confirm('確定要處理這筆 LINE 收件資料嗎？')) return;
+    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` }
+    });
+    const result = await response.json();
+    if (!response.ok) { alert(result.error || '處理失敗'); return; }
+    await loadLineInboxV2();
+    alert(result.imported ? '處理完成。' : '這筆資料先前已處理。');
+}
+
+// 保留原本頁面呼叫名稱。
+renderLineInbox = renderLineInboxV2;
+loadLineInbox = loadLineInboxV2;
+importLineInbox = importLineInboxV2;

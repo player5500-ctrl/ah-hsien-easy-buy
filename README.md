@@ -39,21 +39,14 @@ npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 npx wrangler secret put ADMIN_API_KEY
 ```
 
-5. 在 `wrangler.toml` 設定：
-
-```toml
-[vars]
-ADMIN_ORIGIN = "https://player5500-ctrl.github.io"
-```
-
-6. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：
+5. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：
 
 ```text
-https://<worker-domain>/webhooks/line
+https://<worker-domain>/webhook/line
 ```
 
-7. 在 LINE Developers 啟用 Webhook、Webhook redelivery，以及「Allow bot to join group chats」。
-8. 在網站「LINE 靜默收單設定」填入 Worker 網址與 `ADMIN_API_KEY`。
+6. 在 LINE Developers 啟用 Webhook、Webhook redelivery，以及「Allow bot to join group chats」。
+7. 網站固定連線 `https://ah-hsien-easy-buy-line.vannyai.workers.dev`；在「LINE 靜默收單設定」只輸入 `ADMIN_API_KEY`。
 
 Channel Secret、Channel Access Token 與管理 API 金鑰不得寫入 GitHub Pages 或提交到 Git。
 

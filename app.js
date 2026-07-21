@@ -2952,8 +2952,10 @@ function closeModal(id) {
 // ==========================================================================
 // 10. LINE 完全靜默收單後台（僅讀取與人工轉單，不含任何發訊功能）
 // ==========================================================================
+const API_BASE_URL = 'https://ah-hsien-easy-buy-line.vannyai.workers.dev';
+
 function getLineApiBase() {
-    return (localStorage.getItem('easygo_line_api_base') || '').replace(/\/$/, '');
+    return API_BASE_URL;
 }
 
 function renderLineSettings() {
@@ -2964,9 +2966,8 @@ function renderLineSettings() {
 }
 
 function saveLineSettings() {
-    const value = document.getElementById('line-api-base').value.trim().replace(/\/$/, '');
     const apiKey = document.getElementById('line-admin-api-key').value.trim();
-    localStorage.setItem('easygo_line_api_base', value);
+    localStorage.removeItem('easygo_line_api_base');
     localStorage.setItem('easygo_line_admin_api_key', apiKey);
     alert('LINE 後台連線設定已儲存。靜默模式維持強制啟用。');
 }
@@ -2981,7 +2982,7 @@ function renderLineInbox() {
     const tbody = document.getElementById('line-inbox-tbody');
     if (!tbody) return;
     if (!state.lineInbox.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料，或尚未設定 Worker API 網址。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料。</td></tr>';
         return;
     }
     tbody.innerHTML = state.lineInbox.map(row => {
@@ -3034,7 +3035,7 @@ function renderLineInboxV2() {
     const tbody = document.getElementById('line-inbox-tbody');
     if (!tbody) return;
     if (!state.lineInbox.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料，請先設定 Worker API。</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料。</td></tr>';
         return;
     }
     tbody.innerHTML = state.lineInbox.map(row => {

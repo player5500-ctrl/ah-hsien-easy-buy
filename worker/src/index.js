@@ -1,14 +1,13 @@
 const LineOrder = require("../../line-order.js");
 const { handleWebhook } = require("./webhook-handler.js");
 
-function corsHeaders(request, env) {
-    const origin = request.headers.get("origin") || "";
-    if (!env.ADMIN_ORIGIN || origin !== env.ADMIN_ORIGIN) return {};
+const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
+
+function corsHeaders() {
     return {
-        "access-control-allow-origin": origin,
-        "access-control-allow-headers": "authorization, content-type",
-        "access-control-allow-methods": "GET, POST, OPTIONS",
-        "vary": "Origin"
+        "Access-Control-Allow-Origin": ADMIN_ORIGIN,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key"
     };
 }
 
@@ -19,6 +18,12 @@ function json(value, status = 200, headers = {}) {
 function isAdmin(request, env) {
     const authorization = request.headers.get("authorization") || "";
     return Boolean(env.ADMIN_API_KEY) && authorization === `Bearer ${env.ADMIN_API_KEY}`;
+}
+
+function withCors(response) {
+    const headers = new Headers(response.headers);
+    for (const [name, value] of Object.entries(corsHeaders())) headers.set(name, value);
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function createDependencies(env) {
@@ -112,28 +117,36 @@ async function importInboxRecord(env, inbox) {
     return { imported: true, action, orderId };
 }
 
-async function fetchHandler(request, env, context) {
+async function routeRequest(request, env, context) {
     const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/webhooks/line") return handleWebhook(request, env, context, createDependencies(env));
-    const cors = corsHeaders(request, env);
-    if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) return new Response(null, { status: 204, headers: cors });
-    if (url.pathname.startsWith("/api/") && !isAdmin(request, env)) return json({ error: "未授權" }, 401, cors);
+    if (request.method === "POST" && url.pathname === "/webhook/line") return handleWebhook(request, env, context, createDependencies(env));
+    if (url.pathname.startsWith("/api/") && !isAdmin(request, env)) return json({ error: "未授權" }, 401);
     if (request.method === "GET" && url.pathname === "/api/line-inbox") {
         const rows = await env.DB.prepare("SELECT * FROM line_order_inbox ORDER BY message_time DESC LIMIT 500").all();
-        return json(rows.results, 200, cors);
+        return json(rows.results);
     }
     if (request.method === "POST" && /^\/api\/line-inbox\/[^/]+\/import$/.test(url.pathname)) {
         const messageId = decodeURIComponent(url.pathname.split("/")[3]);
         const inbox = await env.DB.prepare("SELECT * FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
-        if (!inbox) return json({ error: "找不到收件紀錄" }, 404, cors);
-        if ([LineOrder.STATUS.IMPORTED, LineOrder.STATUS.CANCELLED].includes(inbox.status)) return json({ imported: false }, 200, cors);
-        if (inbox.status !== LineOrder.STATUS.READY) return json({ error: "只有『可匯入』的紀錄可以處理" }, 409, cors);
-        if (!inbox.customer_id) return json({ error: "請先配對 LINE 客戶" }, 409, cors);
+        if (!inbox) return json({ error: "找不到收件紀錄" }, 404);
+        if ([LineOrder.STATUS.IMPORTED, LineOrder.STATUS.CANCELLED].includes(inbox.status)) return json({ imported: false });
+        if (inbox.status !== LineOrder.STATUS.READY) return json({ error: "只有『可匯入』的紀錄可以處理" }, 409);
+        if (!inbox.customer_id) return json({ error: "請先配對 LINE 客戶" }, 409);
         const result = await importInboxRecord(env, inbox);
-        if (result.error) return json({ error: result.error }, result.status, cors);
-        return json(result, 200, cors);
+        if (result.error) return json({ error: result.error }, result.status);
+        return json(result);
     }
     return new Response("Not found", { status: 404 });
 }
 
-module.exports = { fetch: fetchHandler, createDependencies, corsHeaders, isAdmin, findTargetOrder, importInboxRecord };
+async function fetchHandler(request, env, context) {
+    if (request.method === "OPTIONS") return withCors(new Response(null, { status: 204 }));
+    try {
+        return withCors(await routeRequest(request, env, context));
+    } catch (error) {
+        console.error("Worker request failed", error);
+        return withCors(json({ error: "伺服器內部錯誤" }, 500));
+    }
+}
+
+module.exports = { fetch: fetchHandler, createDependencies, corsHeaders, isAdmin, withCors, findTargetOrder, importInboxRecord };

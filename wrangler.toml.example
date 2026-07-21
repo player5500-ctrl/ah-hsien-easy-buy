@@ -10,3 +10,4 @@ database_id = "REPLACE_WITH_D1_DATABASE_ID"
 # Secret values must be configured with:
 # npx wrangler secret put LINE_CHANNEL_SECRET
 # npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+# npx wrangler secret put ADMIN_API_KEY

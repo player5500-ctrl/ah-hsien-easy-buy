@@ -39,7 +39,7 @@ test("Webhook 立即回覆 200 並在背景寫入收件匣", async () => {
     const body = JSON.stringify({ events: [event()] });
     const deps = dependencies();
     let background;
-    const request = new Request("https://example.com/webhooks/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const request = new Request("https://example.com/webhook/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
     const response = await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
     assert.equal(response.status, 200);
     await background;
@@ -51,7 +51,7 @@ test("相同 messageId 或 webhookEventId 不重複寫入", async () => {
     const body = JSON.stringify({ events: [event()] });
     const deps = dependencies({ exists: true });
     let background;
-    const request = new Request("https://example.com/webhooks/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const request = new Request("https://example.com/webhook/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
     await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
     await background;
     assert.equal(deps.inserted.length, 0);
@@ -61,7 +61,7 @@ test("未配對客戶保持在待配對狀態", async () => {
     const body = JSON.stringify({ events: [event()] });
     const deps = dependencies({ customer: false });
     let background;
-    const request = new Request("https://example.com/webhooks/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const request = new Request("https://example.com/webhook/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
     await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
     await background;
     assert.equal(deps.inserted[0].status, LineOrder.STATUS.CUSTOMER_UNMATCHED);
@@ -72,7 +72,7 @@ test("LINE 收回事件標記原始收件紀錄", async () => {
     const body = JSON.stringify({ events: [unsend] });
     const deps = dependencies();
     let background;
-    const request = new Request("https://example.com/webhooks/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const request = new Request("https://example.com/webhook/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
     await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
     await background;
     assert.equal(deps.unsent[0].messageId, "M1");

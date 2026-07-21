@@ -1324,3 +1324,73 @@ textarea.form-control {
         font-size: 12px;
     }
 }
+
+/* ==========================================================================
+   RWD 補強（2026-07-21）：手機/桌機雙版面
+   桌機不受影響；以下全部只作用於 768px 以下。
+   ========================================================================== */
+@media (max-width: 768px) {
+    /* 頂部列：活動選單佔滿、拿掉會被壓成直排的文字 label */
+    .main-header {
+        gap: 10px;
+        padding: 12px 14px;
+        flex-wrap: nowrap;
+    }
+    .header-active-group {
+        flex: 1 1 auto;
+        min-width: 0;
+        padding: 6px 12px;
+        gap: 6px;
+    }
+    .header-active-group label {
+        display: none; /* 「當前團購活動：」在窄幅會逐字直排，手機隱藏 */
+    }
+    .header-active-group select {
+        width: 100%;
+        min-width: 0;
+        text-overflow: ellipsis;
+    }
+    .user-profile span {
+        display: none; /* 手機只留頭像，避免「管理員(阿賢夫婦)」溢出 */
+    }
+
+    /* 模式切換／一般按鈕群：改直向堆疊，避免文字被壓成一字一行 */
+    .button-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .button-group .btn {
+        width: 100%;
+        justify-content: center;
+        white-space: nowrap;
+    }
+
+    /* Modal：手機加寬、限高可捲動 */
+    .modal-container {
+        width: 96%;
+        max-width: 96%;
+        max-height: 92vh;
+        max-height: 92dvh;
+    }
+
+    /* 有橫向捲動容器的表格：給最小寬度，避免欄位被壓爛（改為左右滑動） */
+    .table-responsive .table-custom {
+        min-width: 620px;
+    }
+    .table-responsive .line-inbox-table {
+        min-width: 960px; /* LINE 收件匣 10 欄 */
+    }
+
+    /* 篩選列與搜尋列已由既有規則處理；補 select/input 滿版 */
+    .filter-panel select,
+    .filter-panel input {
+        width: 100%;
+    }
+}
+
+/* 更窄的手機（<420px）：統計數字縮小避免擠壓 */
+@media (max-width: 420px) {
+    .stat-value {
+        font-size: 20px;
+    }
+}

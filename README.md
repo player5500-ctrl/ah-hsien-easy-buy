@@ -29,9 +29,10 @@ P023 A+1 B+1
 ## Worker 部署
 
 1. 建立 Cloudflare D1 資料庫。
-2. 新資料庫執行 `worker/schema.sql`；舊版資料庫先備份，再執行 `worker/migration-002-line-commands.sql`。
-3. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 `database_id`。
-4. 設定機密：
+2. 新資料庫執行 `worker/schema.sql`；舊版資料庫先備份，再依序執行 `worker/migration-002-line-commands.sql`、`worker/migration-003-products.sql`（商品雲端同步欄位）。
+3. 建立商品圖片用的 R2 bucket：`npx wrangler r2 bucket create ah-hsien-easy-buy-images`。
+4. 複製 `wrangler.toml.example` 為 `wrangler.toml`，填入 D1 `database_id`（R2 綁定 `IMAGES` 已含在範本內；未綁定時圖片上傳會回 503，其餘功能不受影響）。
+5. 設定機密：
 
 ```bash
 npx wrangler secret put LINE_CHANNEL_SECRET
@@ -39,14 +40,14 @@ npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 npx wrangler secret put ADMIN_API_KEY
 ```
 
-5. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：
+6. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：
 
 ```text
 https://<worker-domain>/webhook/line
 ```
 
-6. 在 LINE Developers 啟用 Webhook、Webhook redelivery，以及「Allow bot to join group chats」。
-7. 網站固定連線 `https://ah-hsien-easy-buy-line.vannyai.workers.dev`；在「LINE 靜默收單設定」只輸入 `ADMIN_API_KEY`。
+7. 在 LINE Developers 啟用 Webhook、Webhook redelivery，以及「Allow bot to join group chats」。
+8. 網站固定連線 `https://ah-hsien-easy-buy-line.vannyai.workers.dev`；在「LINE 靜默收單設定」只輸入 `ADMIN_API_KEY`。
 
 Channel Secret、Channel Access Token 與管理 API 金鑰不得寫入 GitHub Pages 或提交到 Git。
 

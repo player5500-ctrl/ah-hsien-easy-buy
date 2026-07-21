@@ -51,6 +51,10 @@
     }
 
     function parseDirectToken(token, catalog) {
+        const soloQuantity = token.match(/^(?:\+|X)(\d+)$/);
+        if (soloQuantity && catalog.codes.length === 1) {
+            return { productCode: catalog.codes[0], quantity: Number(soloQuantity[1]) };
+        }
         const sorted = [...catalog.codes].sort((a, b) => b.length - a.length);
         for (const code of sorted) {
             if (!token.startsWith(code)) continue;
@@ -110,6 +114,10 @@
         for (const token of tokens) {
             const item = parseDirectToken(token, catalog);
             if (!item) {
+                if (/^(?:\+|X)\d+$/.test(token)) {
+                    return result(normalized, items, STATUS.INCOMPLETE,
+                        `多個商品啟用中，請註明商品代碼，例如 ${catalog.codes[0] || "P01"}+2`, action);
+                }
                 const unknown = token.match(/^([A-Z][A-Z0-9_-]*)/);
                 return result(normalized, items, unknown ? STATUS.UNKNOWN_PRODUCT : STATUS.INCOMPLETE,
                     unknown ? `找不到商品：${unknown[1]}` : `無法解析：${token}`, action);

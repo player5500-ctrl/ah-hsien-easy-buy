@@ -509,6 +509,8 @@
                             <p class="page-subtitle">商品資料建置與啟用/停用控制</p>
                         </div>
                         <div class="button-group">
+                            <button class="btn btn-secondary" onclick="syncAllProductsToCloud()" title="把所有商品同步到雲端（LINE 收單解析用）"><i class="fa-solid fa-cloud-arrow-up"></i> 全部同步雲端</button>
+                            <button class="btn btn-secondary" onclick="openLineNoteModal()" title="產生 LINE 群組記事本文案"><i class="fa-solid fa-clipboard-list"></i> 產生記事本文案</button>
                             <button class="btn btn-primary" onclick="openProductModal()"><i class="fa-solid fa-plus"></i> 新增商品</button>
                         </div>
                     </div>
@@ -862,6 +864,10 @@
                         <label class="form-label" for="prod-photo">商品照片網址 (選填)</label>
                         <input type="text" class="form-control" id="prod-photo" placeholder="http:// 圖片網址 (選填)">
                     </div>
+                    <div class="form-group" style="margin-bottom: 16px;">
+                        <label class="form-label" for="prod-photo-file">或上傳照片到雲端 (選填，JPG/PNG，5MB 內)</label>
+                        <input type="file" class="form-control" id="prod-photo-file" accept="image/jpeg,image/png,image/webp,image/gif">
+                    </div>
                     <p class="voice-support-message" id="product-voice-support-message" hidden>此瀏覽器暫不支援語音輸入，請改用鍵盤輸入。</p>
                     <p class="voice-inline-status" id="product-field-voice-status" role="status" aria-live="polite"></p>
                 </form>
@@ -1208,10 +1214,51 @@
     </div>
 
     <!-- 載入 SheetJS (用於 Excel 匯入與匯出) -->
+    <!-- LINE 收件匣綁定客戶 Modal -->
+    <div class="modal-backdrop" id="line-bind-modal">
+        <div class="modal-container" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 class="modal-title"><i class="fa-solid fa-link text-orange"></i> 綁定 LINE 客戶</h3>
+                <button class="modal-close" onclick="closeLineBindModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom:12px;">LINE 顯示名稱：<strong id="line-bind-display-name"></strong></p>
+                <div class="form-group">
+                    <label class="form-label required" for="line-bind-customer-select">對應客戶</label>
+                    <select class="form-control" id="line-bind-customer-select"></select>
+                </div>
+                <p style="color:var(--text-muted); margin-top:12px;">綁定後，這位客戶所有待配對留言會自動回填，之後的新留言也會自動配對。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeLineBindModal()">取消</button>
+                <button class="btn btn-primary" onclick="confirmLineBind()"><i class="fa-solid fa-link"></i> 確認綁定</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LINE 記事本文案 Modal -->
+    <div class="modal-backdrop" id="line-note-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title"><i class="fa-solid fa-clipboard-list text-orange"></i> LINE 群組記事本文案</h3>
+                <button class="modal-close" onclick="closeLineNoteModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p style="color:var(--text-muted); margin-bottom:12px;">依「啟用中」商品自動產生。複製後貼到 LINE 群組記事本，客人即可依代碼留言下單。</p>
+                <textarea class="form-control" id="line-note-textarea" rows="14" style="font-family: inherit; white-space: pre-wrap;"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeLineNoteModal()">關閉</button>
+                <button class="btn btn-primary" onclick="copyLineNote()"><i class="fa-solid fa-copy"></i> 一鍵複製</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <!-- 載入核心 JS 檔案 -->
     <script src="product-voice.js"></script>
     <script src="line-order.js"></script>
+    <script src="line-note.js"></script>
     <script src="chat-import.js?v=20260720b"></script>
     <script src="app.js"></script>
 </body>

@@ -7,6 +7,11 @@ binding = "DB"
 database_name = "ah-hsien-easy-buy"
 database_id = "REPLACE_WITH_D1_DATABASE_ID"
 
+# 商品圖片儲存（R2）。先建 bucket：npx wrangler r2 bucket create ah-hsien-easy-buy-images
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "ah-hsien-easy-buy-images"
+
 # Secret values must be configured with:
 # npx wrangler secret put LINE_CHANNEL_SECRET
 # npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN

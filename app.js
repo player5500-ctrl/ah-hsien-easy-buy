@@ -12,8 +12,8 @@ let state = {
     activeGroupBuyId: "" // 當前選取的團購活動 ID
 };
 
-// --- 繁體中文示範資料 ---
-const DEMO_DATA = {
+// --- 舊版內建範例資料簽名（僅供一次性清除比對，不再載入為初始資料） ---
+const DEMO_LEGACY = {
     groupBuys: [
         { id: "GB001", name: "2026年7月盛夏消暑團", startDate: "2026-07-01", endDate: "2026-07-20", status: "開放", notes: "本團主打古早味手工蛋捲與清涼飲品！" },
         { id: "GB002", name: "2026年6月端午佳節團", startDate: "2026-06-01", endDate: "2026-06-18", status: "完成", notes: "端午伴手禮，出貨完畢。" }
@@ -255,14 +255,54 @@ function initDatabase() {
         state.customers = JSON.parse(localCust);
         state.orders = JSON.parse(localOrd);
         state.activeGroupBuyId = localActiveId || (state.groupBuys[0] ? state.groupBuys[0].id : "");
+        purgeDemoData();
     } else {
-        // 載入示範資料
-        state.groupBuys = JSON.parse(JSON.stringify(DEMO_DATA.groupBuys));
-        state.products = JSON.parse(JSON.stringify(DEMO_DATA.products));
-        state.customers = JSON.parse(JSON.stringify(DEMO_DATA.customers));
-        state.orders = JSON.parse(JSON.stringify(DEMO_DATA.orders));
-        state.activeGroupBuyId = "GB001";
+        // 全新環境：以空資料啟動（不再載入範例資料）
+        state.groupBuys = [];
+        state.products = [];
+        state.customers = [];
+        state.orders = [];
+        state.activeGroupBuyId = "";
         saveStateToStorage();
+    }
+}
+
+// 一次性清除舊版內建範例資料（比對編號＋內容，避免誤刪使用者自建資料）
+function purgeDemoData() {
+    const demoProducts = new Set(DEMO_LEGACY.products.map(p => `${p.id}|${p.name}`));
+    const demoCustomers = new Set(DEMO_LEGACY.customers.map(c => `${c.id}|${c.nickname}`));
+    // 訂單不可只比對 ID：真實訂單編號同樣從 ORD00001 起跳，純 ID 會誤刪使用者的真訂單。
+    // 必須「ID＋客戶＋金額＋建立日」全部吻合才視為範例訂單（2026-07-21 驗收修正）。
+    const demoOrders = new Map(DEMO_LEGACY.orders.map(o => [o.id, o]));
+    const isDemoOrder = (o) => {
+        const d = demoOrders.get(o.id);
+        return Boolean(d && d.customerId === o.customerId && d.totalAmount === o.totalAmount && d.createdDate === o.createdDate);
+    };
+    const demoGroupBuys = new Set(DEMO_LEGACY.groupBuys.map(g => `${g.id}|${g.name}`));
+
+    const productsBeforePurge = state.products;
+    const before = state.products.length + state.customers.length + state.orders.length + state.groupBuys.length;
+    state.orders = state.orders.filter(o => !isDemoOrder(o));
+    // 清完範例訂單後，仍被「剩餘真實訂單」引用的商品/客戶/團購一律保留（避免孤兒引用）
+    const usedProductIds = new Set(state.orders.flatMap(o => (o.items || []).map(it => it.productId)));
+    const usedCustomerIds = new Set(state.orders.map(o => o.customerId));
+    const usedGroupBuyIds = new Set(state.orders.map(o => o.groupBuyId));
+    state.products = state.products.filter(p => !(demoProducts.has(`${p.id}|${p.name}`) && !usedProductIds.has(p.id)));
+    state.customers = state.customers.filter(c => !(demoCustomers.has(`${c.id}|${c.nickname}`) && !usedCustomerIds.has(c.id)));
+    state.groupBuys = state.groupBuys.filter(g => !(demoGroupBuys.has(`${g.id}|${g.name}`) && !usedGroupBuyIds.has(g.id)));
+    // 只對「實際被移除」的商品做雲端清除，保留下來的不能誤刪雲端資料
+    const keptProductIds = new Set(state.products.map(p => p.id));
+    const removedProducts = productsBeforePurge.filter(p => demoProducts.has(`${p.id}|${p.name}`) && !keptProductIds.has(p.id));
+    const removed = before - (state.products.length + state.customers.length + state.orders.length + state.groupBuys.length);
+
+    if (removed > 0) {
+        if (!state.groupBuys.some(g => g.id === state.activeGroupBuyId)) {
+            state.activeGroupBuyId = state.groupBuys[0] ? state.groupBuys[0].id : "";
+        }
+        saveStateToStorage();
+        // 若範例商品先前曾同步到雲端，一併清除（背景執行，失敗不影響本機）
+        removedProducts.forEach(p => { deleteProductFromCloud(p.id); });
+        console.info(`已清除 ${removed} 筆內建範例資料`);
     }
 }
 
@@ -277,12 +317,12 @@ function saveStateToStorage() {
 
 // 清除/重設資料庫
 function resetDatabaseToDemo() {
-    if (confirm("您確定要將系統回復到初始的繁體中文示範資料嗎？現有資料將被覆蓋！")) {
+    if (confirm("您確定要清空所有系統資料嗎？此動作無法復原！")) {
         localStorage.clear();
         initDatabase();
         renderCurrentGroupBuySelect();
         switchView(currentViewId);
-        alert("系統資料已成功重置為示範資料！");
+        alert("系統資料已全部清空！");
     }
 }
 
@@ -913,7 +953,7 @@ function closeProductModal() {
     document.getElementById('product-modal').classList.remove('show');
 }
 
-function saveProduct() {
+async function saveProduct() {
     const id = document.getElementById('prod-id').value.trim().toUpperCase();
     const name = document.getElementById('prod-name').value.trim();
     const specs = document.getElementById('prod-specs').value.trim();
@@ -954,7 +994,23 @@ function saveProduct() {
     saveStateToStorage();
     closeProductModal();
     renderProducts();
-    alert("商品資料儲存成功！");
+
+    // 雲端同步：先同步商品資料，再上傳圖片（若有選擇檔案）
+    const product = state.products.find(p => p.id === id);
+    let syncResult = await syncProductToCloud(product);
+    const fileInput = document.getElementById('prod-photo-file');
+    const file = fileInput && fileInput.files && fileInput.files[0];
+    if (file && !syncResult.skipped && !syncResult.error) {
+        const uploadResult = await uploadProductImageToCloud(id, file);
+        if (uploadResult.error) {
+            syncResult = { error: `圖片上傳失敗：${uploadResult.error}` };
+        } else if (uploadResult.data && uploadResult.data.image_url) {
+            product.photo = uploadResult.data.image_url;
+            saveStateToStorage();
+        }
+        fileInput.value = '';
+    }
+    alert(`商品資料儲存成功！${cloudSyncSuffix(syncResult)}`);
 }
 
 function toggleProductStatus(id) {
@@ -963,7 +1019,115 @@ function toggleProductStatus(id) {
         p.enabled = !p.enabled;
         saveStateToStorage();
         renderProducts();
-        alert(`已成功將商品 ${id} 狀態切換為：${p.enabled ? '啟用' : '停用'}`);
+        syncProductToCloud(p).then(result => {
+            alert(`已成功將商品 ${id} 狀態切換為：${p.enabled ? '啟用' : '停用'}${cloudSyncSuffix(result)}`);
+        });
+    }
+}
+
+// --- 雲端商品同步（D1 / R2，供 LINE 靜默收單解析與記事本文案使用） ---
+function getCloudApiKey() {
+    return localStorage.getItem('easygo_line_admin_api_key') || '';
+}
+
+async function cloudFetch(path, options = {}) {
+    const key = getCloudApiKey();
+    if (!key) return { skipped: true };
+    try {
+        const response = await fetch(`${API_BASE_URL}${path}`, {
+            ...options,
+            headers: { authorization: `Bearer ${key}`, ...(options.headers || {}) }
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) return { error: payload.error || `HTTP ${response.status}` };
+        return { data: payload };
+    } catch (error) {
+        return { error: error.message || '網路錯誤' };
+    }
+}
+
+function productToCloudPayload(p) {
+    return JSON.stringify({
+        name: p.name,
+        line_code: p.id,
+        price: Math.round(Number(p.price) || 0),
+        description: [p.specs, p.unit && `單位：${p.unit}`].filter(Boolean).join('；') || null,
+        image_url: /^https?:\/\//i.test(p.photo || '') ? p.photo : null,
+        enabled: !!p.enabled
+    });
+}
+
+async function syncProductToCloud(p) {
+    return cloudFetch(`/api/products/${encodeURIComponent(p.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: productToCloudPayload(p)
+    });
+}
+
+async function deleteProductFromCloud(id) {
+    const result = await cloudFetch(`/api/products/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (result.error === '找不到商品') return { data: { deleted: false } };
+    return result;
+}
+
+async function uploadProductImageToCloud(id, file) {
+    return cloudFetch(`/api/products/${encodeURIComponent(id)}/image`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type },
+        body: file
+    });
+}
+
+function cloudSyncSuffix(result) {
+    if (!result) return '';
+    if (result.skipped) return '\n（尚未設定 API 金鑰，未同步雲端；請至「LINE 靜默收單設定」輸入）';
+    if (result.error) return `\n（⚠️ 雲端同步失敗：${result.error}）`;
+    return '\n（☁️ 已同步雲端）';
+}
+
+async function syncAllProductsToCloud() {
+    if (!getCloudApiKey()) {
+        alert('請先到「LINE 靜默收單設定」輸入 API 金鑰！');
+        return;
+    }
+    if (!state.products.length) {
+        alert('目前沒有商品可同步。');
+        return;
+    }
+    let ok = 0;
+    const failed = [];
+    for (const p of state.products) {
+        const result = await syncProductToCloud(p);
+        if (result.error) failed.push(`${p.id}：${result.error}`); else ok += 1;
+    }
+    alert(`雲端同步完成：成功 ${ok} 筆${failed.length ? `，失敗 ${failed.length} 筆\n${failed.join('\n')}` : ''}`);
+}
+
+// --- LINE 記事本文案 ---
+function openLineNoteModal() {
+    const note = LineNote.generateLineNote(state.products);
+    if (!note) {
+        alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
+        return;
+    }
+    document.getElementById('line-note-textarea').value = note;
+    document.getElementById('line-note-modal').classList.add('show');
+}
+
+function closeLineNoteModal() {
+    document.getElementById('line-note-modal').classList.remove('show');
+}
+
+async function copyLineNote() {
+    const text = document.getElementById('line-note-textarea').value;
+    try {
+        await navigator.clipboard.writeText(text);
+        alert('文案已複製！貼到 LINE 群組記事本即可。');
+    } catch (_error) {
+        document.getElementById('line-note-textarea').select();
+        document.execCommand('copy');
+        alert('文案已複製（相容模式）！貼到 LINE 群組記事本即可。');
     }
 }
 
@@ -978,7 +1142,9 @@ function deleteProduct(id) {
         state.products = state.products.filter(p => p.id !== id);
         saveStateToStorage();
         renderProducts();
-        alert("商品已刪除！");
+        deleteProductFromCloud(id).then(result => {
+            alert(`商品已刪除！${cloudSyncSuffix(result)}`);
+        });
     }
 }
 
@@ -3048,9 +3214,17 @@ function renderLineInboxV2() {
         const itemText = items.length
             ? items.map(item => `${escapeLineText(item.productCode)} × ${Number(item.quantity)}`).join('<br>')
             : escapeLineText(row.target_product_prefix || '');
+        const messageIdEncoded = encodeURIComponent(row.message_id || row.messageId);
+        const hasCustomer = Boolean(row.customer_id || row.customerId);
+        const hasLineUser = Boolean(row.line_user_id || row.lineUserId);
+        const customerCell = hasCustomer
+            ? `${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small>`
+            : (hasLineUser
+                ? `<button class="btn btn-secondary btn-sm" onclick="openLineBindModal('${messageIdEncoded}', '${escapeLineText(row.display_name || row.displayName)}')"><i class="fa-solid fa-link"></i> 綁定客戶</button>`
+                : '<small>無 LINE ID</small>');
         return `<tr>
             <td><strong>${escapeLineText(row.display_name || row.displayName)}</strong><small>${escapeLineText(row.line_user_id || row.lineUserId)}</small></td>
-            <td>${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small></td>
+            <td>${customerCell}</td>
             <td><span class="line-action line-action-${escapeLineText(action)}">${actionLabels[action] || action}</span><br>${escapeLineText(row.raw_message || row.rawMessage)}</td>
             <td>${escapeLineText(row.normalized_message || row.normalizedMessage)}</td>
             <td>${itemText}</td>
@@ -3086,6 +3260,49 @@ async function importLineInboxV2(encodedMessageId) {
     if (!response.ok) { alert(result.error || '處理失敗'); return; }
     await loadLineInboxV2();
     alert(result.imported ? '處理完成。' : '這筆資料先前已處理。');
+}
+
+// --- 收件匣：一鍵綁定客戶 ---
+let lineBindTargetMessageId = '';
+
+function openLineBindModal(encodedMessageId, displayName) {
+    if (!state.customers.length) {
+        alert('目前沒有客戶資料，請先到「客戶管理」新增客戶！');
+        return;
+    }
+    lineBindTargetMessageId = encodedMessageId;
+    const select = document.getElementById('line-bind-customer-select');
+    const sorted = [...state.customers].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
+    select.innerHTML = sorted.map(c => `<option value="${escapeLineText(c.id)}">${escapeLineText(c.id)}｜${escapeLineText(c.nickname)}${c.phone ? `（${escapeLineText(c.phone)}）` : ''}</option>`).join('');
+    document.getElementById('line-bind-display-name').textContent = displayName || '(未知名稱)';
+    document.getElementById('line-bind-modal').classList.add('show');
+}
+
+function closeLineBindModal() {
+    lineBindTargetMessageId = '';
+    document.getElementById('line-bind-modal').classList.remove('show');
+}
+
+async function confirmLineBind() {
+    const customerId = document.getElementById('line-bind-customer-select').value;
+    const customer = state.customers.find(c => c.id === customerId);
+    if (!customer || !lineBindTargetMessageId) return;
+    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${lineBindTargetMessageId}/bind-customer`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}`
+        },
+        body: JSON.stringify({ customer_id: customer.id, nickname: customer.nickname })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        alert(result.error || '綁定失敗');
+        return;
+    }
+    closeLineBindModal();
+    await loadLineInboxV2();
+    alert(`綁定完成！${customer.id}｜${customer.nickname}，共回填 ${result.updated_messages} 則訊息。之後這位客戶的留言會自動配對。`);
 }
 
 // 保留原本頁面呼叫名稱。

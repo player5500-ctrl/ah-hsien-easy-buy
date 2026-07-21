@@ -4,3 +4,9 @@ wrangler.toml
 .dev.vars
 .wrangler/
 npm-debug.log*
+
+# 備份與快照不進版控（2026-07-21）
+*.bak
+*.bak-*
+backups/
+wrangler.toml

@@ -11,7 +11,11 @@ CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1,
-  line_code TEXT UNIQUE
+  line_code TEXT UNIQUE,
+  price INTEGER NOT NULL DEFAULT 0,
+  description TEXT,
+  image_url TEXT,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS line_order_inbox (

@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { corsHeaders, fetch: fetchHandler, isAdmin, withCors } = require("./index.js");
+const { corsHeaders, fetch: fetchHandler, isAdmin, withCors, validateProductPayload } = require("./index.js");
 
 test("管理 API 必須使用 Bearer 金鑰", () => {
     const env = { ADMIN_API_KEY: "secret", LINE_CHANNEL_ACCESS_TOKEN: "line-token", LINE_CHANNEL_SECRET: "line-secret" };
@@ -44,6 +44,183 @@ test("成功、401、403、404 與 500 回應都加入 CORS", async () => {
         assert.equal(response.status, status);
         assert.equal(response.headers.get("access-control-allow-origin"), origin);
     }
+});
+
+test("商品欄位驗證：名稱必填、代碼正規化、價格為非負整數", () => {
+    assert.equal(validateProductPayload({}).error, "商品名稱必填");
+    assert.equal(validateProductPayload({ name: "布丁", line_code: "1abc" }).error, "商品代碼格式錯誤，需以英文字母開頭，例如 A001");
+    assert.equal(validateProductPayload({ name: "布丁", price: -5 }).error, "價格必須是 0 以上的整數");
+    assert.equal(validateProductPayload({ name: "布丁", price: 1.5 }).error, "價格必須是 0 以上的整數");
+    const ok = validateProductPayload({ name: " 布丁 ", line_code: "ａ００１", price: 60, enabled: false });
+    assert.deepEqual(ok, { name: "布丁", lineCode: "A001", price: 60, description: null, imageUrl: null, enabled: 0 });
+});
+
+function fakeDb() {
+    const calls = [];
+    return {
+        calls,
+        prepare(sql) {
+            return {
+                bind(...args) {
+                    calls.push({ sql, args });
+                    return {
+                        async run() {
+                            if (/INSERT INTO products/.test(sql) && args[3] === "DUP") {
+                                throw new Error("D1_ERROR: UNIQUE constraint failed: products.line_code");
+                            }
+                            return { meta: { changes: args.includes("missing-id") ? 0 : 1 } };
+                        },
+                        async first() { return null; }
+                    };
+                },
+                async all() { return { results: [{ id: "p1", name: "布丁", line_code: "A001" }] }; }
+            };
+        }
+    };
+}
+
+test("商品 API：列表、建立、更新、刪除與錯誤處理", async () => {
+    const env = { ADMIN_API_KEY: "secret", DB: fakeDb() };
+    const auth = { authorization: "Bearer secret" };
+
+    const list = await fetchHandler(new Request("https://worker/api/products", { headers: auth }), env, {});
+    assert.equal(list.status, 200);
+    assert.deepEqual(await list.json(), [{ id: "p1", name: "布丁", line_code: "A001" }]);
+
+    const created = await fetchHandler(new Request("https://worker/api/products", {
+        method: "POST", headers: auth, body: JSON.stringify({ name: "布丁", line_code: "A001", price: 60 })
+    }), env, {});
+    assert.equal(created.status, 201);
+    assert.equal((await created.json()).created, true);
+
+    const badJson = await fetchHandler(new Request("https://worker/api/products", { method: "POST", headers: auth, body: "{" }), env, {});
+    assert.equal(badJson.status, 400);
+
+    const duplicated = await fetchHandler(new Request("https://worker/api/products", {
+        method: "POST", headers: auth, body: JSON.stringify({ name: "布丁", line_code: "DUP" })
+    }), env, {});
+    assert.equal(duplicated.status, 409);
+
+    const updated = await fetchHandler(new Request("https://worker/api/products/p1", {
+        method: "PUT", headers: auth, body: JSON.stringify({ name: "布丁", price: 70 })
+    }), env, {});
+    assert.equal(updated.status, 200);
+
+    const upserted = await fetchHandler(new Request("https://worker/api/products/missing-id", {
+        method: "PUT", headers: auth, body: JSON.stringify({ name: "新品", line_code: "P099", price: 50 })
+    }), env, {});
+    assert.equal(upserted.status, 201);
+    assert.equal((await upserted.json()).created, true);
+
+    const missing = await fetchHandler(new Request("https://worker/api/products/missing-id", {
+        method: "DELETE", headers: auth
+    }), env, {});
+    assert.equal(missing.status, 404);
+
+    const unauthorized = await fetchHandler(new Request("https://worker/api/products"), env, {});
+    assert.equal(unauthorized.status, 401);
+});
+
+function fakeR2() {
+    const store = new Map();
+    return {
+        store,
+        async put(key, body, options) { store.set(key, { body, contentType: options?.httpMetadata?.contentType }); },
+        async get(key) {
+            const item = store.get(key);
+            return item ? { body: item.body, httpMetadata: { contentType: item.contentType } } : null;
+        }
+    };
+}
+
+test("商品圖片：上傳驗證、寫入 R2 並公開讀取", async () => {
+    const env = { ADMIN_API_KEY: "secret", DB: fakeDb(), IMAGES: fakeR2() };
+    const auth = { authorization: "Bearer secret" };
+    const png = new Uint8Array([137, 80, 78, 71]);
+
+    const wrongType = await fetchHandler(new Request("https://worker/api/products/p1/image", {
+        method: "POST", headers: { ...auth, "content-type": "text/plain" }, body: "hi"
+    }), env, {});
+    assert.equal(wrongType.status, 415);
+
+    const empty = await fetchHandler(new Request("https://worker/api/products/p1/image", {
+        method: "POST", headers: { ...auth, "content-type": "image/png" }, body: new Uint8Array(0)
+    }), env, {});
+    assert.equal(empty.status, 400);
+
+    const dbWithProduct = fakeDb();
+    dbWithProduct.prepare = (sql) => ({
+        bind: (...args) => ({
+            async run() { return { meta: { changes: 1 } }; },
+            async first() { return /SELECT id FROM products/.test(sql) ? { id: args[0] } : null; }
+        })
+    });
+    env.DB = dbWithProduct;
+    const uploaded = await fetchHandler(new Request("https://worker/api/products/p1/image", {
+        method: "POST", headers: { ...auth, "content-type": "image/png" }, body: png
+    }), env, {});
+    assert.equal(uploaded.status, 200);
+    const payload = await uploaded.json();
+    assert.match(payload.image_url, /^https:\/\/worker\/images\/products\/p1\?v=\d+$/);
+    assert.equal(env.IMAGES.store.has("products/p1"), true);
+
+    const served = await fetchHandler(new Request("https://worker/images/products/p1"), env, {});
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get("content-type"), "image/png");
+    assert.equal(served.headers.get("cache-control"), "public, max-age=86400");
+
+    const missing = await fetchHandler(new Request("https://worker/images/products/none"), env, {});
+    assert.equal(missing.status, 404);
+
+    const noAuth = await fetchHandler(new Request("https://worker/api/products/p1/image", {
+        method: "POST", headers: { "content-type": "image/png" }, body: png
+    }), env, {});
+    assert.equal(noAuth.status, 401);
+});
+
+test("收件匣綁定客戶：驗證、衝突與回填", async () => {
+    const auth = { authorization: "Bearer secret" };
+    function bindDb({ inbox, conflict }) {
+        return {
+            prepare(sql) {
+                return {
+                    bind() {
+                        return {
+                            async first() {
+                                if (/FROM line_order_inbox/.test(sql)) return inbox;
+                                if (/FROM customers/.test(sql)) return conflict || null;
+                                return null;
+                            },
+                            async run() { return { meta: { changes: 2 } }; }
+                        };
+                    }
+                };
+            }
+        };
+    }
+
+    const noId = await fetchHandler(new Request("https://worker/api/line-inbox/m1/bind-customer", {
+        method: "POST", headers: auth, body: JSON.stringify({})
+    }), { ADMIN_API_KEY: "secret", DB: bindDb({ inbox: null }) }, {});
+    assert.equal(noId.status, 400);
+
+    const notFound = await fetchHandler(new Request("https://worker/api/line-inbox/m1/bind-customer", {
+        method: "POST", headers: auth, body: JSON.stringify({ customer_id: "A001" })
+    }), { ADMIN_API_KEY: "secret", DB: bindDb({ inbox: null }) }, {});
+    assert.equal(notFound.status, 404);
+
+    const conflicted = await fetchHandler(new Request("https://worker/api/line-inbox/m1/bind-customer", {
+        method: "POST", headers: auth, body: JSON.stringify({ customer_id: "A001" })
+    }), { ADMIN_API_KEY: "secret", DB: bindDb({ inbox: { message_id: "m1", line_user_id: "U1" }, conflict: { id: "A002" } }) }, {});
+    assert.equal(conflicted.status, 409);
+
+    const bound = await fetchHandler(new Request("https://worker/api/line-inbox/m1/bind-customer", {
+        method: "POST", headers: auth, body: JSON.stringify({ customer_id: "a001", nickname: "陳小明" })
+    }), { ADMIN_API_KEY: "secret", DB: bindDb({ inbox: { message_id: "m1", line_user_id: "U1" } }) }, {});
+    assert.equal(bound.status, 200);
+    const payload = await bound.json();
+    assert.equal(payload.customer_id, "A001");
+    assert.equal(payload.updated_messages, 2);
 });
 
 test("LINE Webhook 只使用 /webhook/line", async () => {

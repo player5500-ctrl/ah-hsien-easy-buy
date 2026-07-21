@@ -5,7 +5,7 @@ const root = path.resolve(__dirname, "..");
 const out = path.join(root, "dist");
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
-for (const file of ["index.html", "styles.css", "app.js", "product-voice.js", "line-order.js"]) {
+for (const file of ["index.html", "styles.css", "app.js", "product-voice.js", "line-order.js", "line-note.js", "chat-import.js"]) {
   fs.copyFileSync(path.join(root, file), path.join(out, file));
 }
 console.log("Production build created in dist/");

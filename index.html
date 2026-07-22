@@ -280,6 +280,14 @@
                         <button class="btn btn-secondary" id="order-mode-product-btn" onclick="toggleOrderViewMode('by-product')"><i class="fa-solid fa-boxes-packing"></i> 依商品整理 (叫貨統計)</button>
                     </div>
 
+                    <!-- 列印功能 -->
+                    <div class="button-group" style="margin-bottom: 20px;">
+                        <button class="btn btn-secondary" onclick="printPackingSlips()"><i class="fa-solid fa-print"></i> 列印包貨單</button>
+                        <button class="btn btn-secondary" onclick="printProductTotals()"><i class="fa-solid fa-print"></i> 列印商品總量表</button>
+                        <button class="btn btn-secondary" onclick="printPickupList('外送')"><i class="fa-solid fa-print"></i> 列印外送名單</button>
+                        <button class="btn btn-secondary" onclick="printPickupList('自取')"><i class="fa-solid fa-print"></i> 列印自取名單</button>
+                    </div>
+
                     <!-- =================== 一般訂單列表模式 =================== -->
                     <div id="order-list-subview">
                         <!-- 搜尋與篩選面板 -->
@@ -1299,6 +1307,9 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <!-- 列印輸出區（僅列印時可見） -->
+    <div id="print-area" aria-hidden="true"></div>
+
     <!-- 載入核心 JS 檔案 -->
     <script src="product-voice.js"></script>
     <script src="line-order.js"></script>

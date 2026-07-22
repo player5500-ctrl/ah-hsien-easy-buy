@@ -1212,6 +1212,96 @@ function productToCloudPayload(p) {
     });
 }
 
+// ==========================================================================
+// 列印功能（包貨單／商品總量表／外送與自取名單）2026-07-22 驗收新增
+// ==========================================================================
+function printActiveOrders() {
+    return state.orders.filter(o => o.groupBuyId === state.activeGroupBuyId && o.orderStatus !== '已取消');
+}
+
+function printGroupBuyTitle() {
+    const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
+    return gb ? gb.name : '';
+}
+
+function runPrint(html) {
+    const area = document.getElementById('print-area');
+    if (!area) return alert('找不到列印區域');
+    area.innerHTML = html;
+    window.print();
+}
+
+// 個別客戶包貨單：每位客戶一頁
+function printPackingSlips() {
+    const orders = printActiveOrders();
+    if (!orders.length) return alert('目前團購沒有有效訂單可列印。');
+    const title = printGroupBuyTitle();
+    const pages = orders.map(o => {
+        const rows = (o.items || []).map(it => `<tr>
+            <td>${escapeHtml(it.productName)}</td><td>${escapeHtml(it.specs || '')}</td>
+            <td>${Number(it.quantity)} ${escapeHtml(it.unit || '')}</td>
+            <td>NT$ ${Number(it.price).toLocaleString()}</td>
+            <td>NT$ ${(Number(it.price) * Number(it.quantity)).toLocaleString()}</td></tr>`).join('');
+        return `<div class="print-page">
+            <h2>包貨單｜${escapeHtml(title)}</h2>
+            <div class="print-meta">
+                客戶編號：${escapeHtml(o.customerId)}　客戶暱稱：${escapeHtml(o.customerNickname)}<br>
+                取貨方式：${escapeHtml(o.pickupType || '未指定')}　電話：${escapeHtml(o.phone || '')}
+                ${o.pickupType === '外送' ? `<br>地址：${escapeHtml(o.address || '')}` : ''}
+            </div>
+            <table><thead><tr><th>商品名稱</th><th>規格</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
+            <tbody>${rows}</tbody></table>
+            <p class="print-total">總金額：NT$ ${Number(o.totalAmount).toLocaleString()}（${escapeHtml(o.paymentStatus)}）</p>
+            ${o.notes ? `<p class="print-note">備註：${escapeHtml(o.notes)}</p>` : ''}
+        </div>`;
+    });
+    runPrint(pages.join(''));
+}
+
+// 商品總量表（叫貨統計）
+function printProductTotals() {
+    const orders = printActiveOrders();
+    if (!orders.length) return alert('目前團購沒有有效訂單可列印。');
+    const totals = {};
+    orders.forEach(o => (o.items || []).forEach(it => {
+        const key = it.productId;
+        if (!totals[key]) totals[key] = { name: it.productName, specs: it.specs || '', unit: it.unit || '', quantity: 0, customers: new Set() };
+        totals[key].quantity += Number(it.quantity) || 0;
+        totals[key].customers.add(o.customerId);
+    }));
+    const rows = Object.keys(totals).sort().map(id => {
+        const t = totals[id];
+        return `<tr><td>${escapeHtml(id)}</td><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.specs)}</td>
+            <td>${t.quantity} ${escapeHtml(t.unit)}</td><td>${t.customers.size} 人</td></tr>`;
+    }).join('');
+    runPrint(`<div class="print-page">
+        <h2>商品總量表｜${escapeHtml(printGroupBuyTitle())}</h2>
+        <table><thead><tr><th>商品編號</th><th>商品名稱</th><th>規格</th><th>總數量</th><th>購買客戶數</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+    </div>`);
+}
+
+// 外送／自取名單（未指定取貨方式的訂單獨立列出，避免漏包）
+function printPickupList(type) {
+    const orders = printActiveOrders();
+    const matched = orders.filter(o => (o.pickupType || '') === type);
+    const unspecified = orders.filter(o => !o.pickupType);
+    if (!matched.length && !unspecified.length) return alert(`目前團購沒有${type}訂單可列印。`);
+    const rowsOf = (list) => list.map(o => `<tr>
+        <td>${escapeHtml(o.customerId)}</td><td>${escapeHtml(o.customerNickname)}</td>
+        <td>${escapeHtml(o.phone || '')}</td>
+        <td>${type === '外送' ? escapeHtml(o.address || '') : escapeHtml((o.items || []).map(it => `${it.productName}×${it.quantity}`).join('、'))}</td>
+        <td>NT$ ${Number(o.totalAmount).toLocaleString()}</td>
+        <td>${escapeHtml(o.paymentStatus)}${o.notes ? `／${escapeHtml(o.notes)}` : ''}</td></tr>`).join('');
+    const head = `<tr><th>客戶編號</th><th>客戶暱稱</th><th>電話</th><th>${type === '外送' ? '地址' : '商品內容'}</th><th>金額</th><th>付款／備註</th></tr>`;
+    runPrint(`<div class="print-page">
+        <h2>${escapeHtml(type)}名單｜${escapeHtml(printGroupBuyTitle())}</h2>
+        <table><thead>${head}</thead><tbody>${rowsOf(matched)}</tbody></table>
+        ${unspecified.length ? `<h3>未指定取貨方式（請確認）</h3>
+        <table><thead>${head}</thead><tbody>${rowsOf(unspecified)}</tbody></table>` : ''}
+    </div>`);
+}
+
 // 把 LINE 靜默收單（Postback）在 D1 建立的訂單同步回本機訂單管理／統計／Excel。
 // 只同步 ORD- 前綴（雲端產生）的訂單，不覆蓋手動建立的本地訂單；
 // 已同步訂單保留本地的付款狀態、包貨勾選與備註，只更新品項數量與金額。

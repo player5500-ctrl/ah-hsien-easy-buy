@@ -73,14 +73,9 @@ function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1
                 data: createPostbackData("cancel_item", groupBuy.id, product.id)
             }
         },
-        {
-            type: "button", height: "sm", style: "link", margin: "sm",
-            action: {
-                type: "postback",
-                label: "查看我的訂單",
-                data: createPostbackData("view_order", groupBuy.id, product.id)
-            }
-        },
+        // 「查看我的訂單」已移除：靜默 Postback 對客戶沒有可見結果，
+        // 在提供客戶端訂單查詢頁前不保留沒有回饋的按鈕（2026-07-22 驗收決議，方案 B）。
+        // parsePostbackData 仍接受 view_order，讓已發布的舊卡片不會報錯。
         { type: "text", text: "按鈕下單不會在聊天室產生訊息", size: "xs", color: "#888888", align: "center", wrap: true, margin: "md" }
     ];
     const bubble = { type: "bubble", body: { type: "box", layout: "vertical", contents: bodyContents } };

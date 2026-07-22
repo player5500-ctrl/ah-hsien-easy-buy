@@ -720,7 +720,6 @@ function updateLineFlexPreview() {
         <p class="line-flex-deadline"><strong>收單截止：</strong>${escapeLineText(groupBuy.endDate)} 23:59</p>
         <div class="line-flex-quantity-buttons">${quantities.map(quantity => `<span>${quantity}份</span>`).join('') || '<em>請至少選一個數量</em>'}</div>
         <div class="line-flex-secondary-button">取消訂購</div>
-        <div class="line-flex-link-button">查看我的訂單</div>
         <small>按鈕下單不會在聊天室產生訊息</small>
     </div>`;
 }
@@ -1065,6 +1064,7 @@ function openProductModal(id = '') {
             document.getElementById('prod-price').value = p.price;
             document.getElementById('prod-unit').value = p.unit;
             document.getElementById('prod-enabled').value = String(p.enabled);
+            document.getElementById('prod-desc').value = p.description || '';
             document.getElementById('prod-photo').value = p.photo;
         }
     } else {
@@ -1091,12 +1091,14 @@ function closeProductModal() {
 }
 
 async function saveProduct() {
-    const id = document.getElementById('prod-id').value.trim().toUpperCase();
+    // 商品代碼統一保存為半形大寫（NFKC 全形轉半形＋大寫，與 Worker normalizeLineCode 一致）
+    const id = document.getElementById('prod-id').value.trim().normalize('NFKC').toUpperCase();
     const name = document.getElementById('prod-name').value.trim();
     const specs = document.getElementById('prod-specs').value.trim();
     const priceVal = document.getElementById('prod-price').value;
     const unit = document.getElementById('prod-unit').value.trim();
     const enabled = document.getElementById('prod-enabled').value === "true";
+    const description = document.getElementById('prod-desc').value.trim();
     const photo = document.getElementById('prod-photo').value.trim();
 
     if (!id || !name || !priceVal || !unit) {
@@ -1121,11 +1123,11 @@ async function saveProduct() {
     if (isEdit) {
         // 編輯
         if (existingIdx > -1) {
-            state.products[existingIdx] = { id, name, specs, price, unit, enabled, photo };
+            state.products[existingIdx] = { id, name, specs, price, unit, enabled, description, photo };
         }
     } else {
         // 新增
-        state.products.push({ id, name, specs, price, unit, enabled, photo });
+        state.products.push({ id, name, specs, price, unit, enabled, description, photo });
     }
 
     saveStateToStorage();
@@ -1190,7 +1192,7 @@ function productToCloudPayload(p) {
         price: Math.round(Number(p.price) || 0),
         specs: p.specs || null,
         unit: p.unit || '份',
-        description: [p.specs, p.unit && `單位：${p.unit}`].filter(Boolean).join('；') || null,
+        description: p.description || [p.specs, p.unit && `單位：${p.unit}`].filter(Boolean).join('；') || null,
         image_url: /^https?:\/\//i.test(p.photo || '') ? p.photo : null,
         enabled: !!p.enabled
     });
@@ -1245,7 +1247,12 @@ async function syncAllProductsToCloud() {
 
 // --- LINE 記事本文案 ---
 function openLineNoteModal() {
-    const note = LineNote.generateLineNote(state.products);
+    const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
+    const note = LineNote.generateLineNote(state.products, gb ? {
+        title: `阿賢Easy購｜${gb.name}`,
+        deadline: gb.endDate || '',
+        notes: gb.notes || ''
+    } : {});
     if (!note) {
         alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
         return;

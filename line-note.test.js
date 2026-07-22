@@ -29,3 +29,25 @@ test("沒有啟用商品時回傳空字串", () => {
     assert.equal(LineNote.generateLineNote([products[2]]), "");
     assert.equal(LineNote.generateLineNote([]), "");
 });
+
+test("帶入團購資訊時包含截止時間、到貨與自取外送說明", () => {
+    const note = LineNote.generateLineNote(products, {
+        title: "阿賢Easy購｜[TEST] LINE 靜默收單驗收",
+        deadline: "2026-07-25",
+        arrival: "7/28 到貨",
+        pickupInfo: "自取 NT$250／外送 NT$260",
+        notes: "冷藏保存，可保存7天"
+    });
+    assert.match(note, /\[TEST\] LINE 靜默收單驗收/);
+    assert.match(note, /⏰ 收單截止：2026-07-25 23:59/);
+    assert.match(note, /🚚 到貨／發貨：7\/28 到貨/);
+    assert.match(note, /🏠 自取／外送：自取 NT\$250／外送 NT\$260/);
+    assert.match(note, /📌 冷藏保存，可保存7天/);
+});
+
+test("文案包含商品卡按鈕下單教學且不會輸出 undefined/null", () => {
+    const note = LineNote.generateLineNote(products);
+    assert.match(note, /請直接點選群組中的商品訂購卡選擇數量/);
+    assert.match(note, /不用在聊天室留言＋1/);
+    assert.doesNotMatch(note, /undefined|null/);
+});

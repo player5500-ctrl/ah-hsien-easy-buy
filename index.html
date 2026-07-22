@@ -249,7 +249,7 @@
                                             <th>截止日期</th>
                                             <th>狀態</th>
                                             <th>備註</th>
-                                            <th style="width: 250px;">操作</th>
+                                            <th style="width: 340px;">操作</th>
                                         </tr>
                                     </thead>
                                     <tbody id="group-buys-tbody">
@@ -580,12 +580,12 @@
 
                 <section id="line-settings-view" class="view-section" style="display: none;">
                     <div class="page-header-actions"><div><h1>LINE 靜默收單設定</h1><p class="page-subtitle">LINE ID：0923317559</p></div></div>
-                    <div class="card"><div class="card-body">
-                        <div class="silent-mode-banner"><strong><i class="fa-solid fa-volume-xmark"></i> 完全靜默收單模式：已強制啟用</strong><p>Reply、Push、Broadcast、Multicast、Narrowcast、排程與所有通知功能均未實作且不可啟用。</p></div>
+                    <div class="card"><div class="card-body"><form id="line-settings-form" onsubmit="event.preventDefault(); saveLineSettings();">
+                        <div class="silent-mode-banner"><strong><i class="fa-solid fa-volume-xmark"></i> 客戶下單完全靜默：已強制啟用</strong><p>Webhook 不會 Reply 或 Push；唯一 Push 是管理員在團購活動頁明確確認發布的商品卡。</p></div>
                         <div class="form-group"><label for="line-api-base">Worker API 網址</label><input class="form-control" id="line-api-base" value="https://ah-hsien-easy-buy-line.vannyai.workers.dev" readonly><small>LINE Webhook URL 固定為 https://ah-hsien-easy-buy-line.vannyai.workers.dev/webhook/line。Channel Secret 與 Access Token 僅存於 Worker Secret，不可輸入此網頁。</small></div>
                         <div class="form-group"><label for="line-admin-api-key">管理 API 金鑰</label><input type="password" class="form-control" id="line-admin-api-key" autocomplete="off" placeholder="請輸入管理金鑰"><small>只保存在目前管理者瀏覽器，不會寫入 GitHub；請勿提供給客戶。</small></div>
-                        <button class="btn btn-primary" onclick="saveLineSettings()">儲存後台連線設定</button>
-                    </div></div>
+                        <button type="submit" class="btn btn-primary">儲存後台連線設定</button>
+                    </form></div></div>
                 </section>
 
                 <section id="excel-view" class="view-section" style="display: none;">
@@ -814,6 +814,46 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeGroupBuyModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveGroupBuy()">儲存活動</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- LINE Flex 商品卡發布 Modal -->
+    <div class="modal-backdrop" id="line-publish-modal" aria-hidden="true">
+        <div class="modal-container line-publish-modal-container" role="dialog" aria-modal="true" aria-labelledby="line-publish-title">
+            <div class="modal-header">
+                <h3 class="modal-title" id="line-publish-title"><i class="fa-brands fa-line"></i> 發布到 LINE 群組</h3>
+                <button class="modal-close" onclick="closeLinePublishModal()" aria-label="關閉 LINE 發布視窗">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="line-publish-group-buy-id">
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label class="form-label required" for="line-publish-group">LINE 群組</label>
+                        <select class="form-control" id="line-publish-group" onchange="updateLineFlexPreview()"></select>
+                        <small class="form-help">群組曾傳送訊息給機器人後會自動出現在清單；也可使用環境變數的預設群組。</small>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label required" for="line-publish-product">商品</label>
+                        <select class="form-control" id="line-publish-product" onchange="updateLineFlexPreview()"></select>
+                    </div>
+                </div>
+                <div class="line-publish-options">
+                    <label><input type="checkbox" id="line-publish-show-image" checked onchange="updateLineFlexPreview()"> 顯示商品圖片</label>
+                    <fieldset>
+                        <legend>數量按鈕組合</legend>
+                        <label><input type="checkbox" class="line-publish-quantity" value="1" checked onchange="updateLineFlexPreview()"> 1份</label>
+                        <label><input type="checkbox" class="line-publish-quantity" value="2" checked onchange="updateLineFlexPreview()"> 2份</label>
+                        <label><input type="checkbox" class="line-publish-quantity" value="3" checked onchange="updateLineFlexPreview()"> 3份</label>
+                    </fieldset>
+                </div>
+                <p id="line-publish-status" class="line-publish-status" role="status" aria-live="polite"></p>
+                <div class="line-flex-preview" id="line-flex-preview" aria-label="LINE Flex Message 預覽"></div>
+                <p class="line-silent-notice"><i class="fa-solid fa-volume-xmark"></i> 客戶按下 Postback 按鈕後，機器人不會在群組回覆任何訊息。</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeLinePublishModal()">取消</button>
+                <button class="btn btn-primary" id="line-publish-confirm-btn" onclick="publishLineProduct()"><i class="fa-brands fa-line"></i> 確認發布</button>
             </div>
         </div>
     </div>

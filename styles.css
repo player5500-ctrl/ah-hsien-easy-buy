@@ -1394,3 +1394,141 @@ textarea.form-control {
         font-size: 20px;
     }
 }
+
+/* LINE Flex 商品卡發布與預覽 */
+.line-publish-modal-container {
+    max-width: 760px;
+}
+
+.line-publish-options {
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+    margin: 18px 0;
+}
+
+.line-publish-options fieldset {
+    display: flex;
+    gap: 14px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 10px 14px;
+}
+
+.line-publish-options legend {
+    padding: 0 6px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.form-help {
+    display: block;
+    margin-top: 6px;
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.line-publish-status {
+    color: var(--primary-orange);
+    min-height: 22px;
+}
+
+.line-flex-preview {
+    width: min(100%, 360px);
+    margin: 0 auto;
+    background: #fff;
+    border-radius: 14px;
+    box-shadow: 0 6px 22px rgba(0, 0, 0, .14);
+    overflow: hidden;
+}
+
+.line-flex-preview > img {
+    width: 100%;
+    aspect-ratio: 20 / 13;
+    object-fit: cover;
+    display: block;
+}
+
+.line-flex-preview-body {
+    padding: 20px;
+}
+
+.line-flex-preview-body h4 {
+    font-size: 22px;
+    margin: 0 0 6px;
+}
+
+.line-flex-preview-body p {
+    margin: 7px 0;
+}
+
+.line-flex-price {
+    color: #e86a33;
+    font-size: 22px;
+    font-weight: 800;
+    margin: 12px 0;
+}
+
+.line-flex-price small {
+    color: #777;
+    font-weight: 500;
+}
+
+.line-flex-deadline {
+    color: #c0392b;
+}
+
+.line-flex-quantity-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 16px 0 10px;
+}
+
+.line-flex-quantity-buttons span,
+.line-flex-secondary-button,
+.line-flex-link-button {
+    text-align: center;
+    border-radius: 7px;
+    padding: 8px;
+    font-weight: 700;
+}
+
+.line-flex-quantity-buttons span {
+    color: #fff;
+    background: #e86a33;
+}
+
+.line-flex-secondary-button {
+    background: #f0f0f0;
+    margin-bottom: 7px;
+}
+
+.line-flex-link-button {
+    color: #238c58;
+}
+
+.line-flex-preview-body > small {
+    display: block;
+    text-align: center;
+    color: #888;
+    margin-top: 8px;
+}
+
+.line-silent-notice {
+    margin: 16px 0 0;
+    padding: 10px 12px;
+    color: #176b45;
+    background: #eaf8f0;
+    border-radius: 8px;
+    text-align: center;
+}
+
+@media (max-width: 768px) {
+    .line-publish-options {
+        align-items: stretch;
+        flex-direction: column;
+        gap: 12px;
+    }
+}

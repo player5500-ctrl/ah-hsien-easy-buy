@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { corsHeaders, fetch: fetchHandler, isAdmin, withCors, validateProductPayload } = require("./index.js");
+const { corsHeaders, fetch: fetchHandler, isAdmin, publishFlexMessage, withCors, validateProductPayload } = require("./index.js");
 
 test("管理 API 必須使用 Bearer 金鑰", () => {
     const env = { ADMIN_API_KEY: "secret", LINE_CHANNEL_ACCESS_TOKEN: "line-token", LINE_CHANNEL_SECRET: "line-secret" };
@@ -52,7 +52,7 @@ test("商品欄位驗證：名稱必填、代碼正規化、價格為非負整�
     assert.equal(validateProductPayload({ name: "布丁", price: -5 }).error, "價格必須是 0 以上的整數");
     assert.equal(validateProductPayload({ name: "布丁", price: 1.5 }).error, "價格必須是 0 以上的整數");
     const ok = validateProductPayload({ name: " 布丁 ", line_code: "ａ００１", price: 60, enabled: false });
-    assert.deepEqual(ok, { name: "布丁", lineCode: "A001", price: 60, description: null, imageUrl: null, enabled: 0 });
+    assert.deepEqual(ok, { name: "布丁", lineCode: "A001", price: 60, specs: null, unit: "份", description: null, imageUrl: null, enabled: 0 });
 });
 
 function fakeDb() {
@@ -230,4 +230,57 @@ test("LINE Webhook 只使用 /webhook/line", async () => {
     const oldPath = await fetchHandler(new Request("https://worker/webhooks/line", { method: "POST" }), env, context);
     assert.equal(webhook.status, 401);
     assert.equal(oldPath.status, 404);
+});
+
+test("管理發布 API 會送出 Flex push 並記錄 LINE messageId", async () => {
+    const calls = [];
+    const db = {
+        prepare(sql) {
+            return {
+                bind(...args) {
+                    return {
+                        async first() {
+                            if (/FROM group_buys/.test(sql)) return {
+                                group_buy_id: "GB1", group_buy_name: "七月團購", ends_at: "2099-07-31T15:59:59.000Z", group_buy_status: "open",
+                                product_id: "P1", product_name: "手工蛋捲", specs: "原味", unit: "盒", price: 180,
+                                image_url: "https://example.com/p1.jpg", product_enabled: 1
+                            };
+                            return null;
+                        },
+                        async run() { calls.push({ sql, args }); return { meta: { changes: 1 } }; }
+                    };
+                }
+            };
+        },
+        async batch(statements) { for (const statement of statements) await statement.run(); }
+    };
+    const originalFetch = global.fetch;
+    let requestBody;
+    global.fetch = async (url, options) => {
+        assert.equal(url, "https://api.line.me/v2/bot/message/push");
+        assert.equal(options.headers.authorization, "Bearer line-access-token");
+        requestBody = JSON.parse(options.body);
+        return new Response(JSON.stringify({ sentMessages: [{ id: "LINE-MESSAGE-1" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    try {
+        const result = await publishFlexMessage({ DB: db, LINE_CHANNEL_ACCESS_TOKEN: "line-access-token" }, {
+            group_id: "G1", group_buy_id: "GB1", product_id: "P1", quantities: [1, 2, 3], show_image: true
+        });
+        assert.equal(result.data.line_message_id, "LINE-MESSAGE-1");
+        assert.equal(requestBody.to, "G1");
+        assert.equal(requestBody.messages[0].type, "flex");
+        assert.doesNotMatch(JSON.stringify(requestBody), /displayText/);
+        assert.equal(calls.some(call => /line_flex_publications/.test(call.sql)), true);
+
+        const beforeFailureLogs = calls.filter(call => /line_flex_publications/.test(call.sql)).length;
+        global.fetch = async () => { throw new Error("offline"); };
+        const failed = await publishFlexMessage({ DB: db, LINE_CHANNEL_ACCESS_TOKEN: "line-access-token" }, {
+            group_id: "G1", group_buy_id: "GB1", product_id: "P1", quantities: [1]
+        });
+        assert.equal(failed.status, 502);
+        assert.equal(calls.filter(call => /line_flex_publications/.test(call.sql)).length, beforeFailureLogs + 1);
+        assert.equal(calls.some(call => call.args.includes("offline")), true);
+    } finally {
+        global.fetch = originalFetch;
+    }
 });

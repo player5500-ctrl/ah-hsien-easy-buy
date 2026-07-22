@@ -23,6 +23,8 @@ function dependencies(options = {}) {
         getDisplayName: async () => "Vanny(宛荃)",
         getProductCodes: async () => ["P023-A", "P023-B"],
         findCustomer: async () => options.customer === false ? null : ({ id: "A001", nickname: "Vanny", pickupType: "自取" }),
+        rememberLineGroup: async () => {},
+        processPostback: async value => inserted.push({ postback: value }),
         isSuspectedDuplicate: async () => false,
         insertInbox: async value => inserted.push(value),
         markUnsent: async (messageId, time) => unsent.push({ messageId, time })
@@ -78,8 +80,33 @@ test("LINE 收回事件標記原始收件紀錄", async () => {
     assert.equal(deps.unsent[0].messageId, "M1");
 });
 
-test("完全靜默：程式沒有呼叫任何 LINE 發訊端點", () => {
+test("Postback 事件交給靜默訂單處理，不寫入文字收件匣", async () => {
+    const postback = {
+        type: "postback", webhookEventId: "WP1", timestamp: Date.now(),
+        source: { type: "group", groupId: "G1", userId: "U1" },
+        postback: { data: "action=set_quantity&groupBuyId=GB1&productId=P1&quantity=1" }
+    };
+    const body = JSON.stringify({ events: [postback] });
+    const deps = dependencies();
+    let background;
+    const request = new Request("https://example.com/webhook/line", { method: "POST", body, headers: { "x-line-signature": await sign(body, "secret") } });
+    const response = await handleWebhook(request, { LINE_CHANNEL_SECRET: "secret" }, { waitUntil(value) { background = value; } }, deps);
+    assert.equal(response.status, 200);
+    await background;
+    assert.equal(deps.inserted.length, 1);
+    assert.equal(deps.inserted[0].postback.webhookEventId, "WP1");
+    assert.equal(deps.inserted[0].postback.data.includes("quantity=1"), true);
+});
+
+test("Webhook 完全靜默：處理器沒有呼叫任何 LINE 發訊端點", () => {
     const fs = require("node:fs");
-    const source = fs.readFileSync(require.resolve("./index.js"), "utf8") + fs.readFileSync(require.resolve("./webhook-handler.js"), "utf8");
+    const source = fs.readFileSync(require.resolve("./webhook-handler.js"), "utf8");
     assert.doesNotMatch(source, /\/v2\/bot\/message\/(reply|push|broadcast|multicast|narrowcast)/i);
+});
+
+test("只有管理發布 API 可使用 LINE push，沒有 reply 或群發端點", () => {
+    const fs = require("node:fs");
+    const source = fs.readFileSync(require.resolve("./index.js"), "utf8");
+    assert.match(source, /\/v2\/bot\/message\/push/);
+    assert.doesNotMatch(source, /\/v2\/bot\/message\/(reply|broadcast|multicast|narrowcast)/i);
 });

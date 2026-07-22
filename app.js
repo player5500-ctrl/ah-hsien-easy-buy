@@ -2,6 +2,13 @@
    阿賢Easy購管理系統 - 核心邏輯 & 資料控制 (app.js)
    ========================================================================== */
 
+// --- HTML 跳脫（防 XSS）：所有渲染使用者/外部輸入的地方一律先經過此函式 ---
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
+}
+
 // --- 系統資料狀態庫 ---
 let state = {
     groupBuys: [],
@@ -411,7 +418,7 @@ function renderCurrentGroupBuySelect() {
 
     sortedGB.forEach(gb => {
         const isSelected = gb.id === state.activeGroupBuyId ? "selected" : "";
-        html += `<option value="${gb.id}" ${isSelected}>[${gb.status}] ${gb.name}</option>`;
+        html += `<option value="${escapeHtml(gb.id)}" ${isSelected}>[${gb.status}] ${escapeHtml(gb.name)}</option>`;
     });
 
     if (select) select.innerHTML = html;
@@ -427,7 +434,7 @@ function renderDashboard() {
     const title = document.getElementById('dashboard-title');
     if (title) {
         title.innerHTML = activeGb 
-            ? `${activeGb.name} <span class="badge ${activeGb.status === '開放' ? 'badge-group-open' : activeGb.status === '截止' ? 'badge-group-closed' : 'badge-group-completed'}">${activeGb.status}</span>`
+            ? `${escapeHtml(activeGb.name)} <span class="badge ${activeGb.status === '開放' ? 'badge-group-open' : activeGb.status === '截止' ? 'badge-group-closed' : 'badge-group-completed'}">${activeGb.status}</span>`
             : "尚未選擇/建立團購活動";
     }
 
@@ -474,7 +481,7 @@ function renderDashboard() {
         incompleteHtml += `
             <tr>
                 <td><a onclick="viewOrderDetail('${o.id}')" style="color: var(--primary-orange); cursor:pointer; font-weight:700;">${o.id}</a></td>
-                <td><span class="badge badge-id" style="margin-right:6px;">${o.customerId}</span>${o.customerNickname}</td>
+                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(o.customerNickname)}</td>
                 <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                 <td style="font-weight:700;">NT$ ${o.totalAmount}</td>
                 <td><span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></td>
@@ -494,7 +501,7 @@ function renderDashboard() {
         recentHtml += `
             <tr>
                 <td><a onclick="viewOrderDetail('${o.id}')" style="color: var(--primary-orange); cursor:pointer; font-weight:700;">${o.id}</a></td>
-                <td><span class="badge badge-id" style="margin-right:6px;">${o.customerId}</span>${o.customerNickname}</td>
+                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(o.customerNickname)}</td>
                 <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                 <td style="font-weight:700;">NT$ ${o.totalAmount}</td>
                 <td><span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></td>
@@ -531,16 +538,17 @@ function renderGroupBuys() {
         const isCurrent = gb.id === state.activeGroupBuyId ? `<i class="fa-solid fa-star text-orange" title="當前選定活動"></i> ` : "";
         html += `
             <tr style="${gb.id === state.activeGroupBuyId ? 'background-color: rgba(255, 122, 0, 0.03);' : ''}">
-                <td style="font-weight:700;">${isCurrent}${gb.name}</td>
+                <td style="font-weight:700;">${isCurrent}${escapeHtml(gb.name)}</td>
                 <td style="font-family: Outfit;">${gb.startDate || '-'}</td>
                 <td style="font-family: Outfit;">${gb.endDate || '-'}</td>
                 <td><span class="badge ${gb.status === '開放' ? 'badge-group-open' : gb.status === '截止' ? 'badge-group-closed' : 'badge-group-completed'}">${gb.status}</span></td>
-                <td style="font-size:13px; color:var(--text-muted);">${gb.notes || ''}</td>
+                <td style="font-size:13px; color:var(--text-muted);">${escapeHtml(gb.notes || '')}</td>
                 <td>
                     <div class="button-group">
                         <button class="btn btn-secondary btn-sm" onclick="openGroupBuyModal('${gb.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
                         <button class="btn btn-secondary btn-sm" onclick="selectGroupBuyDirectly('${gb.id}')"><i class="fa-solid fa-circle-check"></i> 選定</button>
                         <button class="btn btn-teal btn-sm" onclick="copyProductsFromPreviousGroup('${gb.id}')" title="複製前一團的商品列表"><i class="fa-solid fa-copy"></i> 複製前團商品</button>
+                        <button class="btn btn-primary btn-sm" onclick="openLinePublishModal('${gb.id}')"><i class="fa-brands fa-line"></i> 發布到 LINE 群組</button>
                     </div>
                 </td>
             </tr>
@@ -643,6 +651,135 @@ function saveGroupBuy() {
     if (currentViewId === 'dashboard') renderDashboard();
 }
 
+function groupBuyStatusForCloud(status) {
+    return status === '開放' ? 'open' : status === '截止' ? 'closed' : 'completed';
+}
+
+function groupBuyDateTime(date, endOfDay = false) {
+    if (!date) return null;
+    return new Date(`${date}T${endOfDay ? '23:59:59' : '00:00:00'}+08:00`).toISOString();
+}
+
+function selectedLinePublishQuantities() {
+    return [...document.querySelectorAll('.line-publish-quantity:checked')].map(input => Number(input.value));
+}
+
+async function openLinePublishModal(groupBuyId) {
+    const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
+    if (!groupBuy) return alert('找不到團購活動。');
+    if (!groupBuy.endDate) return alert('請先設定團購截止日期，才能發布 LINE 商品卡。');
+    const products = state.products.filter(product => product.enabled);
+    if (!products.length) return alert('目前沒有啟用中的商品。');
+    if (!getCloudApiKey()) return alert('請先到「LINE 靜默收單設定」輸入管理 API 金鑰。');
+
+    document.getElementById('line-publish-group-buy-id').value = groupBuyId;
+    document.getElementById('line-publish-product').innerHTML = products.map(product =>
+        `<option value="${escapeLineText(product.id)}">${escapeLineText(product.id)}｜${escapeLineText(product.name)}｜NT$ ${Number(product.price).toLocaleString()}</option>`
+    ).join('');
+    document.getElementById('line-publish-group').innerHTML = '<option value="">讀取 LINE 群組中...</option>';
+    document.getElementById('line-publish-status').textContent = '';
+    document.getElementById('line-publish-modal').classList.add('show');
+    document.getElementById('line-publish-modal').setAttribute('aria-hidden', 'false');
+    updateLineFlexPreview();
+
+    const result = await cloudFetch('/api/line/groups');
+    if (result.error || result.skipped) {
+        document.getElementById('line-publish-group').innerHTML = '<option value="">無法讀取群組</option>';
+        document.getElementById('line-publish-status').textContent = result.error || '尚未設定管理 API 金鑰';
+        return;
+    }
+    const groups = result.data || [];
+    document.getElementById('line-publish-group').innerHTML = groups.length
+        ? groups.map(group => `<option value="${escapeLineText(group.group_id)}">${escapeLineText(group.display_name || '未命名群組')}｜${escapeLineText(group.group_id)}</option>`).join('')
+        : '<option value="">尚無已知 LINE 群組</option>';
+}
+
+function closeLinePublishModal() {
+    const modal = document.getElementById('line-publish-modal');
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+}
+
+function updateLineFlexPreview() {
+    const groupBuy = state.groupBuys.find(item => item.id === document.getElementById('line-publish-group-buy-id').value);
+    const product = state.products.find(item => item.id === document.getElementById('line-publish-product').value) || state.products.find(item => item.enabled);
+    const preview = document.getElementById('line-flex-preview');
+    if (!groupBuy || !product) {
+        preview.innerHTML = '<p>尚無可預覽內容</p>';
+        return;
+    }
+    const quantities = selectedLinePublishQuantities();
+    const image = document.getElementById('line-publish-show-image').checked && /^https:\/\//i.test(product.photo || '')
+        ? `<img src="${escapeLineText(product.photo)}" alt="${escapeLineText(product.name)}">`
+        : '';
+    preview.innerHTML = `${image}<div class="line-flex-preview-body">
+        <h4>${escapeLineText(product.name)}</h4>
+        <p>${escapeLineText(product.specs || '無規格')}</p>
+        <div class="line-flex-price">NT$ ${Number(product.price).toLocaleString()} <small>/ ${escapeLineText(product.unit || '份')}</small></div>
+        <hr><p><strong>團購：</strong>${escapeLineText(groupBuy.name)}</p>
+        <p class="line-flex-deadline"><strong>收單截止：</strong>${escapeLineText(groupBuy.endDate)} 23:59</p>
+        <div class="line-flex-quantity-buttons">${quantities.map(quantity => `<span>${quantity}份</span>`).join('') || '<em>請至少選一個數量</em>'}</div>
+        <div class="line-flex-secondary-button">取消訂購</div>
+        <div class="line-flex-link-button">查看我的訂單</div>
+        <small>按鈕下單不會在聊天室產生訊息</small>
+    </div>`;
+}
+
+async function publishLineProduct() {
+    const groupId = document.getElementById('line-publish-group').value;
+    const groupBuy = state.groupBuys.find(item => item.id === document.getElementById('line-publish-group-buy-id').value);
+    const product = state.products.find(item => item.id === document.getElementById('line-publish-product').value);
+    const quantities = selectedLinePublishQuantities();
+    if (!groupId || !groupBuy || !product) return alert('請選擇 LINE 群組、團購與商品。');
+    if (!quantities.length) return alert('請至少選擇一個數量按鈕。');
+    if (!confirm(`確定將「${product.name}」商品卡發布到所選 LINE 群組？`)) return;
+
+    const button = document.getElementById('line-publish-confirm-btn');
+    const status = document.getElementById('line-publish-status');
+    button.disabled = true;
+    status.textContent = '正在同步團購與商品資料...';
+    try {
+        const productResult = await syncProductToCloud(product);
+        if (productResult.error || productResult.skipped) throw new Error(productResult.error || '商品尚未同步');
+        const groupResult = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuy.id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: groupBuy.name,
+                starts_at: groupBuyDateTime(groupBuy.startDate),
+                ends_at: groupBuyDateTime(groupBuy.endDate, true),
+                status: groupBuyStatusForCloud(groupBuy.status),
+                notes: groupBuy.notes || null,
+                product_ids: [product.id]
+            })
+        });
+        if (groupResult.error || groupResult.skipped) throw new Error(groupResult.error || '團購尚未同步');
+        const payload = {
+            group_id: groupId,
+            group_buy_id: groupBuy.id,
+            product_id: product.id,
+            show_image: document.getElementById('line-publish-show-image').checked,
+            quantities,
+            published_by: '後台管理員'
+        };
+        const previewResult = await cloudFetch('/api/line/flex-preview', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        if (previewResult.error || previewResult.skipped) throw new Error(previewResult.error || 'Flex 預覽驗證失敗');
+        status.textContent = '預覽驗證完成，正在發布到 LINE...';
+        const publishResult = await cloudFetch('/api/line/publish', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        });
+        if (publishResult.error || publishResult.skipped) throw new Error(publishResult.error || '發布失敗');
+        alert(`LINE 商品卡發布成功！\n發布紀錄：${publishResult.data.publication_id}`);
+        closeLinePublishModal();
+    } catch (error) {
+        status.textContent = `發布失敗：${error.message}`;
+    } finally {
+        button.disabled = false;
+    }
+}
+
 
 // ==========================================================================
 // 3. 商品管理 (Product) 邏輯
@@ -681,12 +818,12 @@ function renderProducts() {
 
         html += `
             <tr>
-                <td style="font-family: Outfit; font-weight: 700;">${p.id}</td>
+                <td style="font-family: Outfit; font-weight: 700;">${escapeHtml(p.id)}</td>
                 <td><div style="width:40px; height:40px; border-radius:8px; background-color:var(--bg-warm-gray); display:flex; align-items:center; justify-content:center; color:var(--text-muted);"><i class="fa-solid fa-image"></i></div></td>
-                <td style="font-weight:700;">${p.name}</td>
-                <td>${p.specs || '-'}</td>
+                <td style="font-weight:700;">${escapeHtml(p.name)}</td>
+                <td>${escapeHtml(p.specs || '-')}</td>
                 <td style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price}</td>
-                <td>${p.unit}</td>
+                <td>${escapeHtml(p.unit)}</td>
                 <td>${statusBadge}</td>
                 <td>
                     <div class="button-group">
@@ -702,13 +839,13 @@ function renderProducts() {
         mobileHtml += `
             <div class="mobile-card">
                 <div class="mobile-card-row">
-                    <span class="mobile-card-title"><span class="badge badge-id">${p.id}</span> ${p.name}</span>
+                    <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(p.id)}</span> ${escapeHtml(p.name)}</span>
                     <span>${statusBadge}</span>
                 </div>
                 <div class="mobile-card-divider"></div>
                 <div class="mobile-card-row">
-                    <span style="color:var(--text-muted);">規格：${p.specs || '-'}</span>
-                    <span style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price} / ${p.unit}</span>
+                    <span style="color:var(--text-muted);">規格：${escapeHtml(p.specs || '-')}</span>
+                    <span style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price} / ${escapeHtml(p.unit)}</span>
                 </div>
                 <div class="mobile-card-actions">
                     <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
@@ -1051,6 +1188,8 @@ function productToCloudPayload(p) {
         name: p.name,
         line_code: p.id,
         price: Math.round(Number(p.price) || 0),
+        specs: p.specs || null,
+        unit: p.unit || '份',
         description: [p.specs, p.unit && `單位：${p.unit}`].filter(Boolean).join('；') || null,
         image_url: /^https?:\/\//i.test(p.photo || '') ? p.photo : null,
         enabled: !!p.enabled
@@ -1181,11 +1320,11 @@ function renderCustomers() {
         
         html += `
             <tr>
-                <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${c.id}</span></td>
-                <td style="font-weight:700;">${c.nickname}</td>
-                <td style="font-family: Outfit;">${c.phone}</td>
-                <td style="font-size:13px;">${c.address || '<span style="color:var(--text-muted);">自取客戶/無地址</span>'}</td>
-                <td style="font-size:13px; color:var(--text-muted);">${c.notes || ''}</td>
+                <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${escapeHtml(c.id)}</span></td>
+                <td style="font-weight:700;">${escapeHtml(c.nickname)}</td>
+                <td style="font-family: Outfit;">${escapeHtml(c.phone)}</td>
+                <td style="font-size:13px;">${c.address ? escapeHtml(c.address) : '<span style="color:var(--text-muted);">自取客戶/無地址</span>'}</td>
+                <td style="font-size:13px; color:var(--text-muted);">${escapeHtml(c.notes || '')}</td>
                 <td>
                     <div class="button-group">
                         <button class="btn btn-secondary btn-sm" onclick="openCustomerModal('${c.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
@@ -1200,15 +1339,15 @@ function renderCustomers() {
         mobileHtml += `
             <div class="mobile-card">
                 <div class="mobile-card-row">
-                    <span class="mobile-card-title"><span class="badge badge-id">${c.id}</span> ${c.nickname}</span>
-                    <span style="font-family:Outfit; font-weight:500;">${c.phone}</span>
+                    <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(c.id)}</span> ${escapeHtml(c.nickname)}</span>
+                    <span style="font-family:Outfit; font-weight:500;">${escapeHtml(c.phone)}</span>
                 </div>
                 <div class="mobile-card-divider"></div>
                 <div style="font-size:13px; color:var(--text-dark);">
-                    <i class="fa-solid fa-location-dot" style="color:var(--primary-coral); width:16px;"></i> ${c.address || '無外送地址 (自取)'}
+                    <i class="fa-solid fa-location-dot" style="color:var(--primary-coral); width:16px;"></i> ${escapeHtml(c.address || '無外送地址 (自取)')}
                 </div>
                 <div style="font-size:13px; color:var(--text-muted);">
-                    <i class="fa-solid fa-note-sticky" style="width:16px;"></i> 備註：${c.notes || '無'}
+                    <i class="fa-solid fa-note-sticky" style="width:16px;"></i> 備註：${escapeHtml(c.notes || '無')}
                 </div>
                 <div class="mobile-card-actions">
                     <button class="btn btn-secondary btn-sm" onclick="openCustomerModal('${c.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
@@ -1280,7 +1419,7 @@ function checkDuplicateCustomerWarning() {
     });
 
     if (duplicates.length > 0) {
-        alertMsg.innerHTML = `<strong>重複提醒：</strong>` + duplicates.join('、') + "，請確認是否為重複建檔！";
+        alertMsg.innerHTML = `<strong>重複提醒：</strong>` + escapeHtml(duplicates.join('、')) + "，請確認是否為重複建檔！";
         alertBox.style.display = 'flex';
     }
 }
@@ -1411,11 +1550,11 @@ function viewCustomerHistory(id) {
         const gb = state.groupBuys.find(g => g.id === o.groupBuyId);
         const gbName = gb ? gb.name : "未知團購";
 
-        let itemStr = o.items.map(it => `${it.productName} (${it.specs}) x ${it.quantity}`).join('<br>');
+        let itemStr = o.items.map(it => `${escapeHtml(it.productName)} (${escapeHtml(it.specs)}) x ${it.quantity}`).join('<br>');
 
         html += `
             <tr>
-                <td style="font-size:13px; font-weight:700;">${gbName}</td>
+                <td style="font-size:13px; font-weight:700;">${escapeHtml(gbName)}</td>
                 <td style="font-family:Outfit; font-weight:700;">${o.id}</td>
                 <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                 <td style="font-size:13px; line-height:1.4;">${itemStr}</td>
@@ -1553,12 +1692,12 @@ function renderOrdersList() {
     // 渲染
     list.forEach(o => {
         const isChecked = selectedOrderIds.includes(o.id) ? "checked" : "";
-        const itemStr = o.items.map(it => `<div style="font-size:13px; line-height:1.4;">${it.productName} <span style="color:var(--text-muted);">(${it.specs || '無規格'})</span> <strong>x ${it.quantity}</strong></div>`).join('');
+        const itemStr = o.items.map(it => `<div style="font-size:13px; line-height:1.4;">${escapeHtml(it.productName)} <span style="color:var(--text-muted);">(${escapeHtml(it.specs || '無規格')})</span> <strong>x ${it.quantity}</strong></div>`).join('');
         
         // 地址或配送說明
         let deliveryInfo = "";
         if (o.pickupType === "外送") {
-            deliveryInfo = `<div style="font-size:12px; color:var(--text-muted);"><i class="fa-solid fa-map-marker-alt" style="color:var(--primary-coral);"></i> ${o.address || '無外送地址'}</div>`;
+            deliveryInfo = `<div style="font-size:12px; color:var(--text-muted);"><i class="fa-solid fa-map-marker-alt" style="color:var(--primary-coral);"></i> ${escapeHtml(o.address || '無外送地址')}</div>`;
         } else {
             deliveryInfo = `<div style="font-size:12px; color:var(--primary-teal);"><i class="fa-solid fa-house-user"></i> 自取</div>`;
         }
@@ -1567,10 +1706,10 @@ function renderOrdersList() {
             <tr style="${o.orderStatus === '已取消' ? 'opacity: 0.6;' : ''}">
                 <td style="padding:16px 20px;"><input type="checkbox" class="order-item-checkbox" value="${o.id}" ${isChecked} onchange="onOrderSelectChange('${o.id}', this.checked)"></td>
                 <td style="font-family: Outfit; font-weight:700;"><a onclick="viewOrderDetail('${o.id}')" style="color:var(--primary-orange); cursor:pointer;">${o.id}</a></td>
-                <td><span class="badge badge-id">${o.customerId}</span></td>
-                <td style="font-weight:700;">${o.customerNickname}</td>
+                <td><span class="badge badge-id">${escapeHtml(o.customerId)}</span></td>
+                <td style="font-weight:700;">${escapeHtml(o.customerNickname)}</td>
                 <td>
-                    <div style="font-weight:500;">${o.phone}</div>
+                    <div style="font-weight:500;">${escapeHtml(o.phone)}</div>
                     ${deliveryInfo}
                 </td>
                 <td>${itemStr}</td>
@@ -1593,20 +1732,20 @@ function renderOrdersList() {
                 <div class="mobile-card-row">
                     <span class="mobile-card-title">
                         <a onclick="viewOrderDetail('${o.id}')" style="color:var(--primary-orange); cursor:pointer; font-family:Outfit; font-weight:900;">${o.id}</a>
-                        <span class="badge badge-id">${o.customerId}</span>
-                        <strong>${o.customerNickname}</strong>
+                        <span class="badge badge-id">${escapeHtml(o.customerId)}</span>
+                        <strong>${escapeHtml(o.customerNickname)}</strong>
                     </span>
                     <span class="badge badge-status-${getStatusClass(o.orderStatus)}">${o.orderStatus}</span>
                 </div>
                 <div class="mobile-card-divider"></div>
                 <div class="mobile-card-items">
-                    ${o.items.map(it => `<div>${it.productName} (${it.specs}) x ${it.quantity}</div>`).join('')}
+                    ${o.items.map(it => `<div>${escapeHtml(it.productName)} (${escapeHtml(it.specs)}) x ${it.quantity}</div>`).join('')}
                 </div>
                 <div class="mobile-card-row" style="font-size:13px;">
                     <span>取貨：<span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></span>
                     <span>付款：<span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></span>
                 </div>
-                ${o.pickupType === '外送' ? `<div style="font-size:12px; color:var(--text-muted);"><i class="fa-solid fa-map-marker-alt"></i> ${o.address}</div>` : ''}
+                ${o.pickupType === '外送' ? `<div style="font-size:12px; color:var(--text-muted);"><i class="fa-solid fa-map-marker-alt"></i> ${escapeHtml(o.address)}</div>` : ''}
                 <div class="mobile-card-row">
                     <span style="font-weight:700; color:var(--primary-orange); font-size:16px;">NT$ ${o.totalAmount}</span>
                     <span style="font-size:12px; color:var(--text-muted);">${o.createdDate.substring(5,16)}</span>
@@ -1737,7 +1876,7 @@ function viewOrderDetail(id) {
     o.items.forEach(it => {
         itemsHtml += `
             <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border-light);">
-                <span>${it.productName} <span style="color:var(--text-muted); font-size:12px;">(${it.specs || '無'})</span> x ${it.quantity} ${state.products.find(p=>p.id===it.productId)?.unit || '個'}</span>
+                <span>${escapeHtml(it.productName)} <span style="color:var(--text-muted); font-size:12px;">(${escapeHtml(it.specs || '無')})</span> x ${it.quantity} ${escapeHtml(state.products.find(p=>p.id===it.productId)?.unit || '個')}</span>
                 <span style="font-weight:700;">NT$ ${it.price * it.quantity}</span>
             </div>
         `;
@@ -1750,11 +1889,11 @@ function viewOrderDetail(id) {
                 <span>建立時間：${o.createdDate}</span>
             </div>
             <div class="mobile-card-divider" style="margin:12px 0;"></div>
-            <p><strong>客戶編號：</strong><span class="badge badge-id">${o.customerId}</span></p>
-            <p><strong>客戶暱稱：</strong>${o.customerNickname}</p>
-            <p><strong>連絡電話：</strong>${o.phone}</p>
+            <p><strong>客戶編號：</strong><span class="badge badge-id">${escapeHtml(o.customerId)}</span></p>
+            <p><strong>客戶暱稱：</strong>${escapeHtml(o.customerNickname)}</p>
+            <p><strong>連絡電話：</strong>${escapeHtml(o.phone)}</p>
             <p><strong>取貨方式：</strong><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></p>
-            ${o.pickupType === '外送' ? `<p><strong>外送地址：</strong>${o.address || '無'}</p>` : ''}
+            ${o.pickupType === '外送' ? `<p><strong>外送地址：</strong>${escapeHtml(o.address || '無')}</p>` : ''}
             <div class="mobile-card-divider" style="margin:12px 0;"></div>
             <p style="font-weight:700; margin-bottom:8px;">購買品項：</p>
             <div style="background-color:var(--bg-cream); padding:12px; border-radius:var(--radius-md); margin-bottom:12px;">
@@ -1766,7 +1905,7 @@ function viewOrderDetail(id) {
             </div>
             <p><strong>付款狀態：</strong><span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></p>
             <p><strong>訂單狀態：</strong><span class="badge badge-status-${getStatusClass(o.orderStatus)}">${o.orderStatus}</span></p>
-            <p><strong>備註說明：</strong>${o.notes || '無'}</p>
+            <p><strong>備註說明：</strong>${escapeHtml(o.notes || '無')}</p>
         </div>
     `;
 
@@ -1790,7 +1929,7 @@ function openOrderModal(orderId = '') {
     const activeGbs = state.groupBuys.filter(g => g.status !== '完成');
     let gbHtml = "";
     activeGbs.forEach(g => {
-        gbHtml += `<option value="${g.id}" ${g.id === state.activeGroupBuyId ? 'selected' : ''}>${g.name}</option>`;
+        gbHtml += `<option value="${escapeHtml(g.id)}" ${g.id === state.activeGroupBuyId ? 'selected' : ''}>${escapeHtml(g.name)}</option>`;
     });
     document.getElementById('ord-group-buy').innerHTML = gbHtml || `<option value="">請先建立活動</option>`;
 
@@ -1798,7 +1937,7 @@ function openOrderModal(orderId = '') {
     const sortedCusts = [...state.customers].sort((a, b) => a.id.localeCompare(b.id, undefined, {numeric: true}));
     let custHtml = `<option value="">-- 請選擇客戶 --</option>`;
     sortedCusts.forEach(c => {
-        custHtml += `<option value="${c.id}">[${c.id}] ${c.nickname}</option>`;
+        custHtml += `<option value="${escapeHtml(c.id)}">[${escapeHtml(c.id)}] ${escapeHtml(c.nickname)}</option>`;
     });
     document.getElementById('ord-customer-select').innerHTML = custHtml;
 
@@ -1934,7 +2073,7 @@ function renderCartTable() {
         let optHtml = "";
         activeProds.forEach(p => {
             const isSelected = p.id === item.productId ? "selected" : "";
-            optHtml += `<option value="${p.id}" ${isSelected}>[${p.id}] ${p.name}</option>`;
+            optHtml += `<option value="${escapeHtml(p.id)}" ${isSelected}>[${escapeHtml(p.id)}] ${escapeHtml(p.name)}</option>`;
         });
 
         html += `
@@ -1942,7 +2081,7 @@ function renderCartTable() {
                 <select class="form-control" onchange="onCartItemProductChange(${index}, this.value)">
                     ${optHtml}
                 </select>
-                <span style="font-size:13px; color:var(--text-muted); text-align:center;">${item.specs || '-'}</span>
+                <span style="font-size:13px; color:var(--text-muted); text-align:center;">${escapeHtml(item.specs || '-')}</span>
                 <input type="number" class="form-control" style="text-align:center;" value="${item.quantity}" min="1" oninput="onCartItemQtyChange(${index}, this.value)">
                 <input type="number" class="form-control" value="${item.price}" min="0" oninput="onCartItemPriceChange(${index}, this.value)">
                 <span style="font-weight:700; text-align:right; font-family:Outfit;">NT$ ${subtotal}</span>
@@ -2165,7 +2304,7 @@ function renderCustomerSummaryView() {
             packingChecklistHtml += `
                 <li class="checklist-item ${isItChecked ? 'checked' : ''}" onclick="togglePackItem('${o.id}', '${it.productId}', event)">
                     <span class="item-text">
-                        ${it.productName} <span style="color:var(--text-muted); font-size:12px;">(${it.specs || '無'})</span> 
+                        ${escapeHtml(it.productName)} <span style="color:var(--text-muted); font-size:12px;">(${escapeHtml(it.specs || '無')})</span>
                         <strong style="color:var(--primary-orange); font-size:16px; margin-left:8px;">x ${it.quantity}</strong>
                     </span>
                     <input type="checkbox" class="item-checkbox" ${isItChecked ? 'checked' : ''} onclick="event.stopPropagation(); togglePackItem('${o.id}', '${it.productId}', event)">
@@ -2177,9 +2316,9 @@ function renderCustomerSummaryView() {
             <div class="customer-summary-card">
                 <div class="customer-summary-header" onclick="toggleDetailPanel('${o.id}')">
                     <div class="customer-info-left">
-                        <span class="badge badge-id">${o.customerId}</span>
-                        <span class="customer-name">${o.customerNickname}</span>
-                        <span class="customer-contact"><i class="fa-solid fa-phone"></i> ${o.phone}</span>
+                        <span class="badge badge-id">${escapeHtml(o.customerId)}</span>
+                        <span class="customer-name">${escapeHtml(o.customerNickname)}</span>
+                        <span class="customer-contact"><i class="fa-solid fa-phone"></i> ${escapeHtml(o.phone)}</span>
                         <span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span>
                     </div>
                     
@@ -2199,8 +2338,8 @@ function renderCustomerSummaryView() {
                 <div class="customer-detail-panel" id="detail-${o.id}">
                     <div class="form-grid" style="margin-bottom: 16px; font-size:13px; grid-template-columns: 2fr 1fr;">
                         <div>
-                            <p><strong>外送地址：</strong>${o.pickupType === '外送' ? (o.address || '無') : '自取'}</p>
-                            <p><strong>備註說明：</strong>${o.notes || '無'}</p>
+                            <p><strong>外送地址：</strong>${o.pickupType === '外送' ? escapeHtml(o.address || '無') : '自取'}</p>
+                            <p><strong>備註說明：</strong>${escapeHtml(o.notes || '無')}</p>
                         </div>
                         <div style="text-align:right;">
                             ${showQuickPackBtn ? `<button class="btn btn-teal btn-sm" id="btn-quickpack-${o.id}" onclick="quickMarkOrderPacked('${o.id}')"><i class="fa-solid fa-box-open"></i> 一鍵標記已包貨</button>` : ''}
@@ -2302,11 +2441,11 @@ function renderProductSummaryView() {
     list.forEach(s => {
         html += `
             <tr>
-                <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${s.id}</span></td>
-                <td style="font-weight:700;">${s.name}</td>
-                <td>${s.specs || '-'}</td>
+                <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${escapeHtml(s.id)}</span></td>
+                <td style="font-weight:700;">${escapeHtml(s.name)}</td>
+                <td>${escapeHtml(s.specs || '-')}</td>
                 <td style="font-size:18px; font-weight:900; color:var(--primary-orange);">${s.totalQty}</td>
-                <td style="font-weight:700;">${s.unit}</td>
+                <td style="font-weight:700;">${escapeHtml(s.unit)}</td>
                 <td style="font-weight:700;">${s.buyers.size} 人</td>
                 <td>
                     <button class="btn btn-secondary btn-sm" onclick="viewProductBuyers('${s.id}')"><i class="fa-solid fa-list-check"></i> 查看名單</button>
@@ -2337,8 +2476,8 @@ function viewProductBuyers(prodId) {
             const isItChecked = o.checkedProductIds && o.checkedProductIds.includes(prodId);
             html += `
                 <tr>
-                    <td style="font-family: Outfit; font-weight:700;">${o.customerId}</td>
-                    <td style="font-weight:700;">${o.customerNickname}</td>
+                    <td style="font-family: Outfit; font-weight:700;">${escapeHtml(o.customerId)}</td>
+                    <td style="font-weight:700;">${escapeHtml(o.customerNickname)}</td>
                     <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                     <td style="font-weight:900; color:var(--primary-orange);">${it.quantity}</td>
                     <td style="font-weight:700;">NT$ ${it.price * it.quantity}</td>
@@ -2660,7 +2799,7 @@ function parseAndValidateImportData(matrix) {
     
     let previewHtmlHead = "<tr><th>Excel列</th>";
     headers.forEach(h => {
-        previewHtmlHead += `<th>${h}</th>`;
+        previewHtmlHead += `<th>${escapeHtml(h)}</th>`;
     });
     previewHtmlHead += "</tr>";
     document.getElementById('import-preview-thead').innerHTML = previewHtmlHead;
@@ -2740,7 +2879,7 @@ function parseAndValidateImportData(matrix) {
             previewHtmlBody += `<td>${rowNum}</td>`;
             headers.forEach(h => {
                 const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${row[idx] !== undefined ? row[idx] : ''}</td>`;
+                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
             });
             previewHtmlBody += "</tr>";
         });
@@ -2801,7 +2940,7 @@ function parseAndValidateImportData(matrix) {
             previewHtmlBody += `<tr><td>${rowNum}</td>`;
             headers.forEach(h => {
                 const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${row[idx] !== undefined ? row[idx] : ''}</td>`;
+                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
             });
             previewHtmlBody += "</tr>";
         });
@@ -2931,7 +3070,7 @@ function parseAndValidateImportData(matrix) {
             previewHtmlBody += `<tr><td>${rowNum}</td>`;
             headers.forEach(h => {
                 const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${row[idx] !== undefined ? row[idx] : ''}</td>`;
+                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
             });
             previewHtmlBody += "</tr>";
         });
@@ -2986,7 +3125,7 @@ function parseAndValidateImportData(matrix) {
         errWrapper.style.display = 'block';
         let errHtml = "";
         importErrors.forEach(err => {
-            errHtml += `<div class="error-item"><span class="row-num">第 ${err.row} 列</span> <strong>[${err.field}]</strong> ${err.reason}</div>`;
+            errHtml += `<div class="error-item"><span class="row-num">第 ${err.row} 列</span> <strong>[${escapeHtml(err.field)}]</strong> ${escapeHtml(err.reason)}</div>`;
         });
         errContainer.innerHTML = errHtml;
         document.getElementById('btn-execute-import').disabled = true; // 包含錯誤，鎖定匯入按鈕
@@ -3002,7 +3141,7 @@ function parseAndValidateImportData(matrix) {
         warnWrapper.style.display = 'block';
         let warnHtml = "";
         importWarnings.forEach(w => {
-            warnHtml += `<li>${w}</li>`;
+            warnHtml += `<li>${escapeHtml(w)}</li>`;
         });
         warnContainer.innerHTML = warnHtml;
     } else {
@@ -3139,9 +3278,7 @@ function saveLineSettings() {
 }
 
 function escapeLineText(value) {
-    const div = document.createElement('div');
-    div.textContent = value == null ? '' : String(value);
-    return div.innerHTML;
+    return escapeHtml(value);
 }
 
 function renderLineInbox() {

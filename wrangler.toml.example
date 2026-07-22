@@ -16,3 +16,8 @@ bucket_name = "ah-hsien-easy-buy-images"
 # npx wrangler secret put LINE_CHANNEL_SECRET
 # npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 # npx wrangler secret put ADMIN_API_KEY
+
+# 非敏感環境設定可放在 [vars]；也可在 Cloudflare Dashboard 設定。
+[vars]
+LINE_DEFAULT_GROUP_ID = ""
+APP_BASE_URL = "https://player5500-ctrl.github.io/ah-hsien-easy-buy/"

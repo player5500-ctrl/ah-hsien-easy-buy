@@ -2,7 +2,11 @@ node_modules/
 dist/
 wrangler.toml
 .dev.vars
+.env
+.env.*
+!.env.example
 .wrangler/
+.playwright-cli/
 npm-debug.log*
 
 # 備份與快照不進版控（2026-07-21）

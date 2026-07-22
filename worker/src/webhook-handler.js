@@ -26,6 +26,7 @@ async function processTextEvent(event, dependencies) {
 
     const groupId = event.source.groupId || event.source.roomId;
     const lineUserId = event.source.userId || "";
+    if (dependencies.rememberLineGroup) await dependencies.rememberLineGroup(conversationType, groupId);
     const displayName = await dependencies.getDisplayName(conversationType, groupId, lineUserId);
     const parsed = LineOrder.parseMessage(event.message.text, await dependencies.getProductCodes());
     const customer = lineUserId ? await dependencies.findCustomer(lineUserId, displayName) : null;
@@ -55,8 +56,27 @@ async function processTextEvent(event, dependencies) {
     console.log("LINE inbox stored", { sourceType: conversationType, action: record.action, status: record.status, itemCount: record.parsedItems.length });
 }
 
+async function processPostbackEvent(event, dependencies) {
+    if (event.type !== "postback") return;
+    const conversationType = event.source?.type;
+    if (conversationType !== "group" && conversationType !== "room") return;
+    const groupId = event.source.groupId || event.source.roomId || "";
+    const lineUserId = event.source.userId || "";
+    if (dependencies.rememberLineGroup) await dependencies.rememberLineGroup(conversationType, groupId);
+    const displayName = await dependencies.getDisplayName(conversationType, groupId, lineUserId);
+    await dependencies.processPostback({
+        webhookEventId: event.webhookEventId || "",
+        timestamp: event.timestamp,
+        groupId,
+        lineUserId,
+        displayName,
+        data: event.postback?.data || ""
+    });
+}
+
 async function processEvent(event, dependencies) {
     if (event.type === "unsend") return processUnsendEvent(event, dependencies);
+    if (event.type === "postback") return processPostbackEvent(event, dependencies);
     return processTextEvent(event, dependencies);
 }
 
@@ -74,4 +94,4 @@ async function handleWebhook(request, env, context, dependencies) {
     return new Response("OK", { status: 200 });
 }
 
-module.exports = { verifySignature, processTextEvent, processUnsendEvent, processEvent, handleWebhook };
+module.exports = { verifySignature, processTextEvent, processPostbackEvent, processUnsendEvent, processEvent, handleWebhook };

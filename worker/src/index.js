@@ -611,6 +611,22 @@ async function routeRequest(request, env, context) {
         const result = await env.DB.prepare("SELECT * FROM line_flex_publications ORDER BY created_at DESC LIMIT 200").all();
         return json(result.results);
     }
+    if (request.method === "GET" && url.pathname === "/api/orders") {
+        // 供後台把 LINE 靜默收單（Postback）訂單同步回訂單管理／商品統計／Excel（2026-07-22 驗收補齊）
+        const groupBuyId = (url.searchParams.get("group_buy_id") || "").trim();
+        if (!groupBuyId) return json({ error: "缺少 group_buy_id" }, 400);
+        const ordersResult = await env.DB.prepare(`SELECT o.id, o.customer_id, o.group_buy_id, o.pickup_type, o.status,
+                o.total_amount, o.created_at, o.updated_at,
+                c.nickname AS customer_nickname, c.pickup_type AS customer_pickup_type
+            FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
+            WHERE o.group_buy_id = ? ORDER BY o.created_at LIMIT 1000`).bind(groupBuyId).all();
+        const itemsResult = await env.DB.prepare(`SELECT i.order_id, i.product_id, i.product_code, i.quantity,
+                i.unit_price, i.amount, i.item_status, p.name AS product_name, p.specs, p.unit
+            FROM order_items i JOIN orders o ON o.id = i.order_id
+            LEFT JOIN products p ON p.id = i.product_id
+            WHERE o.group_buy_id = ? LIMIT 5000`).bind(groupBuyId).all();
+        return json({ orders: ordersResult.results, items: itemsResult.results });
+    }
     if (request.method === "GET" && url.pathname === "/api/line-inbox") {
         const rows = await env.DB.prepare("SELECT * FROM line_order_inbox ORDER BY message_time DESC LIMIT 500").all();
         return json(rows.results);
@@ -624,8 +640,24 @@ async function routeRequest(request, env, context) {
         const inbox = await env.DB.prepare("SELECT message_id, line_user_id FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
         if (!inbox) return json({ error: "找不到收件紀錄" }, 404);
         if (!inbox.line_user_id) return json({ error: "此訊息沒有 LINE 使用者 ID，無法綁定" }, 409);
-        const conflict = await env.DB.prepare("SELECT id FROM customers WHERE line_user_id = ? AND id <> ?").bind(inbox.line_user_id, customerId).first();
-        if (conflict) return json({ error: `此 LINE 帳號已綁定客戶 ${conflict.id}，請先處理重複綁定` }, 409);
+        const conflict = await env.DB.prepare("SELECT id, profile_status FROM customers WHERE line_user_id = ? AND id <> ?").bind(inbox.line_user_id, customerId).first();
+        if (conflict) {
+            const isAutoPending = conflict.profile_status === "pending" && /^LINE-/.test(conflict.id);
+            if (!isAutoPending) return json({ error: `此 LINE 帳號已綁定客戶 ${conflict.id}，請先處理重複綁定` }, 409);
+            // Postback 靜默收單會先建立 LINE-xxx 暫存客戶：綁定時把暫存客戶的訂單移轉到正式客戶後移除暫存列，
+            // 避免 line_user_id 唯一衝突（2026-07-22 驗收修正）。order_change_logs 保留原值作為稽核。
+            try {
+                await env.DB.batch([
+                    env.DB.prepare("UPDATE orders SET customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ?").bind(customerId, conflict.id),
+                    env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(conflict.id)
+                ]);
+            } catch (error) {
+                if (isUniqueViolation(error)) {
+                    return json({ error: `客戶 ${customerId} 在同一團購已有訂單，無法自動合併暫存客戶 ${conflict.id} 的訂單，請先在訂單管理處理` }, 409);
+                }
+                throw error;
+            }
+        }
         await env.DB.prepare(`INSERT INTO customers (id, nickname, line_user_id, pickup_type, profile_status, created_at, updated_at)
             VALUES (?, ?, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET nickname = excluded.nickname, line_user_id = excluded.line_user_id,

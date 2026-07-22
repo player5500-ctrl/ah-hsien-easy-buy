@@ -223,6 +223,36 @@ test("收件匣綁定客戶：驗證、衝突與回填", async () => {
     assert.equal(payload.updated_messages, 2);
 });
 
+test("收件匣綁定客戶：Postback 自動建立的 LINE- 暫存客戶會被合併而不是回 409", async () => {
+    const auth = { authorization: "Bearer secret" };
+    const batched = [];
+    const db = {
+        prepare(sql) {
+            return {
+                bind(...args) {
+                    return {
+                        sql, args,
+                        async first() {
+                            if (/FROM line_order_inbox/.test(sql)) return { message_id: "m1", line_user_id: "U1" };
+                            if (/FROM customers/.test(sql)) return { id: "LINE-abc123", profile_status: "pending" };
+                            return null;
+                        },
+                        async run() { return { meta: { changes: 1 } }; }
+                    };
+                }
+            };
+        },
+        async batch(statements) { batched.push(...statements.map(s => s.sql)); return []; }
+    };
+    const bound = await fetchHandler(new Request("https://worker/api/line-inbox/m1/bind-customer", {
+        method: "POST", headers: auth, body: JSON.stringify({ customer_id: "A002", nickname: "Kevin" })
+    }), { ADMIN_API_KEY: "secret", DB: db }, {});
+    assert.equal(bound.status, 200);
+    assert.equal((await bound.json()).bound, true);
+    assert.equal(batched.some(sql => /UPDATE orders SET customer_id/.test(sql)), true, "應把暫存客戶的訂單移轉給正式客戶");
+    assert.equal(batched.some(sql => /DELETE FROM customers/.test(sql)), true, "應移除 LINE- 暫存客戶");
+});
+
 test("LINE Webhook 只使用 /webhook/line", async () => {
     const env = { LINE_CHANNEL_SECRET: "secret" };
     const context = { waitUntil() {} };

@@ -371,13 +371,20 @@ function switchView(viewId, subviewAction = '') {
     } else if (viewId === 'line-settings') {
         renderLineSettings();
     } else if (viewId === 'orders') {
-        if (subviewAction === 'by-customer') {
-            toggleOrderViewMode('by-customer');
-        } else if (subviewAction === 'by-product') {
-            toggleOrderViewMode('by-product');
-        } else {
-            toggleOrderViewMode('list');
-        }
+        const renderOrdersSubview = () => {
+            if (subviewAction === 'by-customer') {
+                toggleOrderViewMode('by-customer');
+            } else if (subviewAction === 'by-product') {
+                toggleOrderViewMode('by-product');
+            } else {
+                toggleOrderViewMode('list');
+            }
+        };
+        renderOrdersSubview();
+        // 背景同步 LINE 靜默收單訂單後重新渲染（失敗不影響本地資料顯示）
+        syncLineOrdersFromCloud().then(result => {
+            if (result && result.data && result.data.synced && currentViewId === 'orders') renderOrdersSubview();
+        });
     } else if (viewId === 'customers') {
         renderCustomers();
     } else if (viewId === 'products') {
@@ -385,6 +392,8 @@ function switchView(viewId, subviewAction = '') {
     } else if (viewId === 'excel') {
         // 2026-07-20 匯入功能下架（訂單以 LINE 訂單收件匣為主），一律顯示匯出
         toggleExcelSubtab('export');
+        // 匯出前先把 LINE 靜默收單訂單同步回本機，避免 Excel 少單
+        syncLineOrdersFromCloud();
     }
     
     window.scrollTo(0, 0);
@@ -637,7 +646,12 @@ function saveGroupBuy() {
         }
     } else {
         // 新增
-        const newId = "GB" + String(state.groupBuys.length + 1).padStart(3, '0');
+        // 以現有最大編號+1 產生，避免刪除或匯入後「筆數+1」與既有編號重複（2026-07-22 驗收修正）
+        const maxGbNum = state.groupBuys.reduce((max, g) => {
+            const match = String(g.id).match(/^GB(\d+)$/i);
+            return match ? Math.max(max, parseInt(match[1], 10)) : max;
+        }, 0);
+        const newId = "GB" + String(maxGbNum + 1).padStart(3, '0');
         state.groupBuys.push({ id: newId, name, startDate, endDate, status, notes });
         if (state.groupBuys.length === 1) {
             state.activeGroupBuyId = newId;
@@ -1196,6 +1210,57 @@ function productToCloudPayload(p) {
         image_url: /^https?:\/\//i.test(p.photo || '') ? p.photo : null,
         enabled: !!p.enabled
     });
+}
+
+// 把 LINE 靜默收單（Postback）在 D1 建立的訂單同步回本機訂單管理／統計／Excel。
+// 只同步 ORD- 前綴（雲端產生）的訂單，不覆蓋手動建立的本地訂單；
+// 已同步訂單保留本地的付款狀態、包貨勾選與備註，只更新品項數量與金額。
+async function syncLineOrdersFromCloud() {
+    if (!getCloudApiKey() || !state.activeGroupBuyId) return { skipped: true };
+    const result = await cloudFetch(`/api/orders?group_buy_id=${encodeURIComponent(state.activeGroupBuyId)}`);
+    if (result.error || result.skipped) return result;
+    const orders = (result.data && result.data.orders) || [];
+    const items = (result.data && result.data.items) || [];
+    const itemsByOrder = {};
+    items.forEach(it => { (itemsByOrder[it.order_id] = itemsByOrder[it.order_id] || []).push(it); });
+    let changed = 0;
+    orders.forEach(o => {
+        if (!/^ORD-/.test(String(o.id))) return;
+        if (o.customer_id && !state.customers.some(c => c.id === o.customer_id)) {
+            state.customers.push({ id: o.customer_id, nickname: o.customer_nickname || o.customer_id, phone: '', address: '', notes: 'LINE 靜默收單自動建立，請補齊電話與地址' });
+        }
+        const customer = state.customers.find(c => c.id === o.customer_id) || {};
+        const existing = state.orders.find(x => x.id === o.id);
+        const activeItems = (itemsByOrder[o.id] || []).filter(it => it.item_status === 'active').map(it => ({
+            productId: it.product_id || it.product_code,
+            productName: it.product_name || it.product_code || it.product_id,
+            specs: it.specs || '',
+            quantity: Number(it.quantity) || 0,
+            price: Number(it.unit_price) || 0,
+            unit: it.unit || '份'
+        }));
+        const mapped = {
+            id: o.id,
+            groupBuyId: o.group_buy_id,
+            customerId: o.customer_id,
+            customerNickname: o.customer_nickname || (existing && existing.customerNickname) || o.customer_id,
+            phone: customer.phone || (existing && existing.phone) || '',
+            address: (existing && existing.address) || customer.address || '',
+            pickupType: (existing && existing.pickupType) || o.pickup_type || o.customer_pickup_type || '',
+            items: activeItems,
+            totalAmount: Number(o.total_amount) || 0,
+            paymentStatus: (existing && existing.paymentStatus) || '未付款',
+            orderStatus: o.status === '已取消' ? '已取消' : ((existing && existing.orderStatus && existing.orderStatus !== '新訂單') ? existing.orderStatus : '新訂單'),
+            notes: (existing && existing.notes) || 'LINE 商品卡靜默收單',
+            createdDate: String(o.created_at || '').replace('T', ' ').slice(0, 19),
+            checkedProductIds: (existing && existing.checkedProductIds) || []
+        };
+        const idx = state.orders.findIndex(x => x.id === o.id);
+        if (idx > -1) state.orders[idx] = mapped; else state.orders.push(mapped);
+        changed += 1;
+    });
+    if (changed) saveStateToStorage();
+    return { data: { synced: changed } };
 }
 
 async function syncProductToCloud(p) {

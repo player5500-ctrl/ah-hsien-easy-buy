@@ -14,7 +14,7 @@ test("CORS 回應包含固定管理網站與完整方法、標頭", () => {
     const headers = new Headers(corsHeaders());
     assert.equal(headers.get("access-control-allow-origin"), "https://player5500-ctrl.github.io");
     assert.equal(headers.get("access-control-allow-methods"), "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    assert.equal(headers.get("access-control-allow-headers"), "Content-Type, Authorization, X-API-Key");
+    assert.equal(headers.get("access-control-allow-headers"), "Content-Type, Authorization");
 });
 
 test("所有 OPTIONS 預檢請求都回傳完整 CORS", async () => {
@@ -22,7 +22,7 @@ test("所有 OPTIONS 預檢請求都回傳完整 CORS", async () => {
     assert.equal(response.status, 204);
     assert.equal(response.headers.get("access-control-allow-origin"), "https://player5500-ctrl.github.io");
     assert.equal(response.headers.get("access-control-allow-methods"), "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-    assert.equal(response.headers.get("access-control-allow-headers"), "Content-Type, Authorization, X-API-Key");
+    assert.equal(response.headers.get("access-control-allow-headers"), "Content-Type, Authorization");
 });
 
 test("成功、401、403、404 與 500 回應都加入 CORS", async () => {
@@ -59,6 +59,7 @@ function fakeDb() {
     const calls = [];
     return {
         calls,
+        async batch(statements) { return Promise.all(statements.map(statement => statement.run())); },
         prepare(sql) {
             return {
                 bind(...args) {

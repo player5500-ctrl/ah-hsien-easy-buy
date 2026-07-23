@@ -8,7 +8,7 @@ function corsHeaders() {
     return {
         "Access-Control-Allow-Origin": ADMIN_ORIGIN,
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-API-Key"
+        "Access-Control-Allow-Headers": "Content-Type, Authorization"
     };
 }
 
@@ -212,8 +212,15 @@ async function handleProductRoutes(request, env, url) {
         return json({ id, updated: true });
     }
     if (request.method === "DELETE") {
-        const result = await env.DB.prepare("DELETE FROM products WHERE id = ?").bind(id).run();
-        if (!result.meta.changes) return json({ error: "找不到商品" }, 404);
+        // 有訂單紀錄的商品不可刪除（與前端規則一致，保護訂單參照與稽核）；
+        // 可刪除時先清 group_buy_products 參照，避免外鍵造成 500（2026-07-23 修正）。
+        const ordered = await env.DB.prepare("SELECT 1 FROM order_items WHERE product_id = ? OR product_code = ? LIMIT 1").bind(id, id).first();
+        if (ordered) return json({ error: "此商品已有訂單紀錄，不可刪除，請改用停用" }, 409);
+        const results = await env.DB.batch([
+            env.DB.prepare("DELETE FROM group_buy_products WHERE product_id = ?").bind(id),
+            env.DB.prepare("DELETE FROM products WHERE id = ?").bind(id)
+        ]);
+        if (!results[1].meta.changes) return json({ error: "找不到商品" }, 404);
         return json({ id, deleted: true });
     }
     return null;

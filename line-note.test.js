@@ -15,14 +15,16 @@ test("產生文案：只含啟用商品、含圖片連結與下單教學", () =>
     assert.match(note, /🖼 https:\/\/img\.example\/p001\.png/);
     assert.match(note, /NT\$60／個/);
     assert.doesNotMatch(note, /停用品/);
-    assert.match(note, /例如「P001\+2」/);
+    assert.match(note, /例如「P001\+5」/);
+    assert.match(note, /以最後一次按的為準（不會累加）/);
+    assert.match(note, /按了卡片不會有任何回應是正常的/);
     assert.doesNotMatch(note, /直接留言「\+2」/);
 });
 
 test("單一商品時加入 +N 快速下單說明", () => {
     const note = LineNote.generateLineNote([products[1]]);
     assert.match(note, /只有一樣商品，直接留言「\+2」也可以/);
-    assert.match(note, /例如「P002\+2」/);
+    assert.match(note, /例如「P002\+5」/);
 });
 
 test("沒有啟用商品時回傳空字串", () => {

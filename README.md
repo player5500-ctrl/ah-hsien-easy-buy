@@ -4,7 +4,7 @@
 
 ## LINE Flex 商品卡＋靜默 Postback 收單
 
-管理員可在「團購活動管理」按「發布到 LINE 群組」，先預覽商品卡，再由受保護的管理 API 呼叫 LINE Push API 發布。商品卡的 `1份／2份／3份／取消訂購／查看我的訂單` 都是 Postback Action，沒有 `displayText`。
+管理員可在「團購活動管理」按「發布到 LINE 群組」，先預覽商品卡，再由受保護的管理 API 呼叫 LINE Push API 發布。商品卡的 `1份／2份／3份／取消訂購` 都是 Postback Action，沒有 `displayText`。
 
 客戶按鈕後，Webhook 只在 D1 transaction 內更新訂單、事件紀錄與異動紀錄，不呼叫 Reply、Push、Broadcast、Multicast 或 Narrowcast，因此群組聊天室不會產生新訊息。數量按鈕是「設定數量」而不是累加；價格只從 D1 `products` 查詢。
 
@@ -57,7 +57,6 @@ npx wrangler secret put ADMIN_API_KEY
 
 ```toml
 LINE_DEFAULT_GROUP_ID = ""
-APP_BASE_URL = "https://player5500-ctrl.github.io/ah-hsien-easy-buy/"
 ```
 
 6. 部署 Worker，並把 LINE Developers 的 Webhook URL 設成：

@@ -119,7 +119,6 @@
                         </div>
                         <div class="button-group">
                             <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
-                            <!-- 2026-07-20 匯入下架：匯入 Excel／截圖匯入按鈕移除，訂單以 LINE 訂單收件匣為主 -->
                             <button class="btn btn-secondary" onclick="switchView('excel', 'export')"><i class="fa-solid fa-file-export"></i> 匯出 Excel</button>
                         </div>
                     </div>
@@ -604,127 +603,8 @@
                         </div>
                     </div>
 
-                    <!-- 匯入與匯出選項卡（2026-07-20 匯入下架：隱藏但保留 DOM，避免 toggleExcelSubtab 取不到元素） -->
-                    <div class="import-steps" style="margin-bottom: 24px; display: none;">
-                        <div class="import-step active" id="tab-excel-import" onclick="toggleExcelSubtab('import')">
-                            <i class="fa-solid fa-file-arrow-up"></i> 資料匯入精靈
-                        </div>
-                        <div class="import-step" id="tab-excel-export" onclick="toggleExcelSubtab('export')">
-                            <i class="fa-solid fa-file-arrow-down"></i> 資料匯出中心
-                        </div>
-                    </div>
-
-                    <!-- =================== 匯入子頁面 =================== -->
-                    <div id="excel-import-subview">
-                        <!-- 第一步：選擇匯入類型 -->
-                        <div class="card" id="import-step-1">
-                            <div class="card-header"><div class="card-title">第一步：選擇匯入資料類型</div></div>
-                            <div class="card-body">
-                                <div class="form-grid">
-                                    <div class="form-group">
-                                        <label class="form-label">選擇類型</label>
-                                        <select class="form-control" id="excel-import-type" onchange="onImportTypeSelect()">
-                                            <option value="">-- 請選擇 --</option>
-                                            <option value="customers">匯入「客戶資料」</option>
-                                            <option value="products">匯入「商品資料」</option>
-                                            <option value="orders">匯入「訂單資料」</option>
-                                            <option value="orders-chat">匯入「訂單-聊天截圖／文字」（OCR）</option>
-                                        </select>
-                                    </div>
-                                    <div class="form-group" style="justify-content: flex-end;" id="template-download-container">
-                                        <!-- 動態產生範本下載按鈕 -->
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 第二步：上傳檔案 -->
-                        <div class="card" id="import-step-2" style="display: none;">
-                            <div class="card-header"><div class="card-title">第二步：選擇並上傳檔案</div></div>
-                            <div class="card-body">
-                                <div class="upload-zone" onclick="triggerFileInput()">
-                                    <i class="fa-solid fa-cloud-arrow-up"></i>
-                                    <p>點擊上傳檔案 或 拖曳檔案至此</p>
-                                    <span>僅支援 .xlsx 與 .csv 格式檔案</span>
-                                    <input type="file" id="excel-file-input" style="display: none;" accept=".xlsx, .xls, .csv" onchange="handleFileSelect(event)">
-                                </div>
-                                <div id="selected-file-info" style="margin-top: 15px; font-weight: 700; display: none; text-align: center; color: var(--primary-teal);">
-                                    已選取檔案：<span id="selected-file-name"></span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- 第三步：資料預覽與檢驗 -->
-                        <div class="card" id="import-step-3" style="display: none;">
-                            <div class="card-header"><div class="card-title">第三步：資料預覽與格式檢查</div></div>
-                            <div class="card-body">
-                                <!-- 統計警示 -->
-                                <div class="import-summary">
-                                    <div class="summary-badge sum-total">
-                                        <span class="val" id="import-stat-total">0</span>
-                                        <span class="lbl">總筆數</span>
-                                    </div>
-                                    <div class="summary-badge sum-new">
-                                        <span class="val" id="import-stat-new">0</span>
-                                        <span class="lbl">新增筆數</span>
-                                    </div>
-                                    <div class="summary-badge sum-update">
-                                        <span class="val" id="import-stat-update">0</span>
-                                        <span class="lbl">更新筆數</span>
-                                    </div>
-                                    <div class="summary-badge sum-dup">
-                                        <span class="val" id="import-stat-dup">0</span>
-                                        <span class="lbl">重複提示數</span>
-                                    </div>
-                                    <div class="summary-badge sum-err">
-                                        <span class="val" id="import-stat-err" style="color: #d63d3b;">0</span>
-                                        <span class="lbl">錯誤筆數</span>
-                                    </div>
-                                </div>
-
-                                <!-- 錯誤提示列表 -->
-                                <div class="error-list" id="import-errors-wrapper" style="display: none; margin-bottom: 24px;">
-                                    <div class="error-list-title">
-                                        <i class="fa-solid fa-triangle-exclamation"></i>
-                                        <span>發現以下資料錯誤（錯誤資料無法匯入，請修正後重新上傳）：</span>
-                                    </div>
-                                    <div id="import-errors-container">
-                                        <!-- 動態產生錯誤項目 -->
-                                    </div>
-                                </div>
-
-                                <!-- 重複提示列表 -->
-                                <div class="alert alert-warning" id="import-warnings-wrapper" style="display: none; margin-bottom: 24px;">
-                                    <div>
-                                        <div style="font-weight: 700; margin-bottom: 6px;"><i class="fa-solid fa-circle-info"></i> 疑似重複的客戶提示：</div>
-                                        <ul id="import-warnings-container" style="padding-left: 20px;">
-                                            <!-- 動態產生重複項目 -->
-                                        </ul>
-                                    </div>
-                                </div>
-
-                                <!-- 資料預覽表格 -->
-                                <div class="table-responsive" style="max-height: 300px; border: 1px solid var(--border-light); border-radius: var(--radius-md);">
-                                    <table class="table-custom" style="font-size: 13px;">
-                                        <thead id="import-preview-thead">
-                                            <!-- 動態填入標題 -->
-                                        </thead>
-                                        <tbody id="import-preview-tbody">
-                                            <!-- 動態填入內容 -->
-                                        </tbody>
-                                    </table>
-                                </div>
-
-                                <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px;">
-                                    <button class="btn btn-secondary" onclick="resetImportWizard()">取消並重新開始</button>
-                                    <button class="btn btn-primary" id="btn-execute-import" disabled onclick="executeImport()"><i class="fa-solid fa-circle-check"></i> 確認正式匯入資料</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
                     <!-- =================== 匯出子頁面 =================== -->
-                    <div id="excel-export-subview" style="display: none;">
+<div id="excel-export-subview">
                         <div class="card">
                             <div class="card-header"><div class="card-title">匯出團購活動資料（含四個工作表）</div></div>
                             <div class="card-body">
@@ -1217,55 +1097,7 @@
         </div>
     </div>
 
-    <!-- 截圖匯入訂單 Modal -->
-    <div class="modal-backdrop" id="chat-import-modal" aria-hidden="true">
-        <div class="modal-container" role="dialog" aria-modal="true" aria-labelledby="chat-import-title" style="max-width:760px;">
-            <div class="modal-header">
-                <h3 class="modal-title" id="chat-import-title"><i class="fa-solid fa-image text-orange"></i> 截圖匯入訂單</h3>
-                <button class="modal-close" onclick="closeChatImportModal()" aria-label="關閉截圖匯入">&times;</button>
-            </div>
-            <div class="modal-body">
-                <!-- 步驟一：圖片 -->
-                <div class="form-group">
-                    <label class="form-label">步驟一：選擇團購聊天截圖（含貼文品項與樓下 A+1／B+1 回覆）</label>
-                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                        <input type="file" id="chat-import-file" accept="image/*" onchange="handleChatImportFile(this)">
-                        <button class="btn btn-primary" id="chat-import-ocr-btn" onclick="runChatImportOCR()"><i class="fa-solid fa-wand-magic-sparkles"></i> 開始辨識文字 (OCR)</button>
-                    </div>
-                    <p id="chat-import-image-name" style="margin:6px 0 0; color:#888; font-size:0.85em;">尚未選擇圖片（也可直接把截圖 Ctrl+V 貼進本視窗，或跳過圖片直接貼文字）</p>
-                    <p id="chat-import-status" role="status" aria-live="polite" style="margin:4px 0 0; color:#e67e22; font-weight:bold;"></p>
-                </div>
-                <!-- 步驟二：文字核對 -->
-                <div class="form-group">
-                    <label class="form-label">步驟二：核對／修正辨識文字（也可直接把聊天文字貼在這裡）</label>
-                    <textarea id="chat-import-text" class="form-control" rows="8" placeholder="範例格式：&#10;【乖乖】好運箱/開運箱 $120&#10;A.【乖乖好運箱-椰子】&#10;B.【乖乖開運箱-五香】&#10;佩芳&#10;B+1&#10;馮淑真&#10;A+1 B+1" style="font-family:monospace;"></textarea>
-                    <button class="btn btn-primary" style="margin-top:8px;" onclick="parseChatImportTextNow()"><i class="fa-solid fa-list-check"></i> 解析文字 → 產生訂單預覽</button>
-                </div>
-                <!-- 步驟三：預覽 -->
-                <div id="chat-import-preview-section" style="display:none;">
-                    <div class="form-group">
-                        <label class="form-label">步驟三：確認訂單內容（可直接修改），選擇匯入的團購活動</label>
-                        <select id="chat-import-gb-select" class="form-control" style="max-width:360px;"></select>
-                    </div>
-                    <div id="chat-import-warnings" style="display:none; background:#fff6e5; border:1px solid #f0c36d; border-radius:6px; padding:10px; margin-bottom:10px; font-size:0.9em;"></div>
-                    <div class="table-responsive">
-                        <table class="table-custom">
-                            <thead><tr><th>訂購人暱稱</th><th>品項</th><th>數量</th><th></th></tr></thead>
-                            <tbody id="chat-import-preview-tbody"></tbody>
-                        </table>
-                    </div>
-                    <button class="btn btn-secondary" style="margin-top:6px;" onclick="addChatImportRow()"><i class="fa-solid fa-plus"></i> 手動加一列</button>
-                    <p style="margin:8px 0 0; color:#888; font-size:0.85em;">匯入規則：暱稱相同沿用既有客戶，否則自動建立；品項不存在會自動建立商品；同團購同客戶已有訂單將「覆寫」明細（會先確認）。新訂單預設自取／未付款，金額「不含」外送運費（如需外送請在訂單編輯調整）。</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" onclick="closeChatImportModal()">取消</button>
-                <button class="btn btn-primary" id="chat-import-execute-btn" disabled onclick="executeChatImport()"><i class="fa-solid fa-circle-check"></i> 確認匯入訂單</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- 載入 SheetJS (用於 Excel 匯入與匯出) -->
+    <!-- 載入 SheetJS（用於 Excel 匯出） -->
     <!-- LINE 收件匣綁定客戶 Modal -->
     <div class="modal-backdrop" id="line-bind-modal">
         <div class="modal-container" style="max-width: 420px;">
@@ -1301,6 +1133,7 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeLineNoteModal()">關閉</button>
+                <button class="btn btn-secondary" onclick="downloadLineNoteImages()" title="下載啟用中商品的圖片，方便附到 LINE 記事本"><i class="fa-solid fa-download"></i> 下載商品圖</button>
                 <button class="btn btn-primary" onclick="copyLineNote()"><i class="fa-solid fa-copy"></i> 一鍵複製</button>
             </div>
         </div>
@@ -1314,7 +1147,6 @@
     <script src="product-voice.js"></script>
     <script src="line-order.js"></script>
     <script src="line-note.js"></script>
-    <script src="chat-import.js?v=20260720b"></script>
     <script src="app.js"></script>
 </body>
 </html>

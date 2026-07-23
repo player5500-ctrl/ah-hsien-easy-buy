@@ -322,17 +322,6 @@ function saveStateToStorage() {
     localStorage.setItem("easygo_active_gb_id", state.activeGroupBuyId);
 }
 
-// 清除/重設資料庫
-function resetDatabaseToDemo() {
-    if (confirm("您確定要清空所有系統資料嗎？此動作無法復原！")) {
-        localStorage.clear();
-        initDatabase();
-        renderCurrentGroupBuySelect();
-        switchView(currentViewId);
-        alert("系統資料已全部清空！");
-    }
-}
-
 // --- 視圖切換邏輯 (SPA Routing) ---
 let currentViewId = 'dashboard';
 function switchView(viewId, subviewAction = '') {
@@ -390,8 +379,7 @@ function switchView(viewId, subviewAction = '') {
     } else if (viewId === 'products') {
         renderProducts();
     } else if (viewId === 'excel') {
-        // 2026-07-20 匯入功能下架（訂單以 LINE 訂單收件匣為主），一律顯示匯出
-        toggleExcelSubtab('export');
+        prepareExcelExport();
         // 匯出前先把 LINE 靜默收單訂單同步回本機，避免 Excel 少單
         syncLineOrdersFromCloud();
     }
@@ -1418,6 +1406,36 @@ function openLineNoteModal() {
 
 function closeLineNoteModal() {
     document.getElementById('line-note-modal').classList.remove('show');
+}
+
+// 下載啟用中商品的圖片（LINE 記事本無法自動顯示連結圖片，需手動附圖；此功能方便一次存圖）
+async function downloadLineNoteImages() {
+    const targets = state.products.filter(p => p.enabled && /^https?:\/\//i.test(p.photo || ''));
+    if (!targets.length) {
+        alert('啟用中的商品沒有可下載的圖片（請先在商品管理上傳或填寫圖片網址）。');
+        return;
+    }
+    let done = 0;
+    const failed = [];
+    for (const p of targets) {
+        try {
+            const response = await fetch(p.photo);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const blob = await response.blob();
+            const extension = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${p.id}_${p.name}.${extension}`.replace(/[\\/:*?"<>|]/g, '_');
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+            done += 1;
+        } catch (_error) {
+            failed.push(p.id);
+        }
+    }
+    alert(`已下載 ${done} 張商品圖。${failed.length ? `\n下載失敗：${failed.join('、')}（可點文案中的連結手動儲存）` : '\n請在 LINE 記事本用「照片」功能附上。'}`);
 }
 
 async function copyLineNote() {
@@ -2658,24 +2676,11 @@ function viewProductBuyers(prodId) {
 // ==========================================================================
 // 8. Excel 匯入 / 匯出邏輯 (重點模組)
 // ==========================================================================
-let excelSubtab = 'import';
-function toggleExcelSubtab(tab) {
-    excelSubtab = tab;
-    document.getElementById('tab-excel-import').className = tab === 'import' ? 'import-step active' : 'import-step';
-    document.getElementById('tab-excel-export').className = tab === 'export' ? 'import-step active' : 'import-step';
-    
-    document.getElementById('excel-import-subview').style.display = tab === 'import' ? 'block' : 'none';
-    document.getElementById('excel-export-subview').style.display = tab === 'export' ? 'block' : 'none';
-    
-    if (tab === 'import') {
-        resetImportWizard();
-    } else {
-        // 匯出重設
-        document.getElementById('export-filter-pickup').value = "all";
-        document.getElementById('export-filter-payment').value = "all";
-        document.getElementById('export-filter-status').value = "all";
-        renderCurrentGroupBuySelect();
-    }
+function prepareExcelExport() {
+    document.getElementById('export-filter-pickup').value = "all";
+    document.getElementById('export-filter-payment').value = "all";
+    document.getElementById('export-filter-status').value = "all";
+    renderCurrentGroupBuySelect();
 }
 
 // --- Excel 匯出模組 (支援多工作表) ---
@@ -2815,594 +2820,6 @@ function exportToExcel() {
 }
 
 
-// --- Excel 匯入模組 (CSV/XLSX 解析與多行合併) ---
-let importedData = null; // 暫存已解析尚未正式匯入的資料
-let importErrors = [];
-let importWarnings = [];
-let importStats = { total: 0, newCount: 0, updateCount: 0, dupCount: 0, errCount: 0 };
-let currentImportType = '';
-
-function resetImportWizard() {
-    document.getElementById('excel-import-type').value = "";
-    document.getElementById('template-download-container').innerHTML = "";
-    document.getElementById('excel-file-input').value = "";
-    
-    document.getElementById('import-step-2').style.display = 'none';
-    document.getElementById('import-step-3').style.display = 'none';
-    document.getElementById('selected-file-info').style.display = 'none';
-    document.getElementById('import-errors-wrapper').style.display = 'none';
-    document.getElementById('import-warnings-wrapper').style.display = 'none';
-    
-    importedData = null;
-    importErrors = [];
-    importWarnings = [];
-    importStats = { total: 0, newCount: 0, updateCount: 0, dupCount: 0, errCount: 0 };
-}
-
-// 選擇匯入類型，並生成模板下載按鈕
-function onImportTypeSelect() {
-    const type = document.getElementById('excel-import-type').value;
-    currentImportType = type;
-    const dlContainer = document.getElementById('template-download-container');
-    
-    if (!type) {
-        resetImportWizard();
-        return;
-    }
-
-    let btnHtml = "";
-    if (type === 'customers') {
-        btnHtml = `<button class="btn btn-secondary btn-sm" onclick="downloadTemplate('customers')"><i class="fa-solid fa-download"></i> 下載「客戶」Excel範本</button>`;
-    } else if (type === 'products') {
-        btnHtml = `<button class="btn btn-secondary btn-sm" onclick="downloadTemplate('products')"><i class="fa-solid fa-download"></i> 下載「商品」Excel範本</button>`;
-    } else if (type === 'orders') {
-        btnHtml = `<button class="btn btn-secondary btn-sm" onclick="downloadTemplate('orders')"><i class="fa-solid fa-download"></i> 下載「訂單」Excel範本</button>`;
-    }
-
-    dlContainer.innerHTML = btnHtml;
-    document.getElementById('import-step-2').style.display = 'block';
-    document.getElementById('import-step-3').style.display = 'none';
-}
-
-// 生成範本 CSV 供下載
-function downloadTemplate(type) {
-    let headers = [];
-    let filename = "";
-    let data = [];
-
-    if (type === 'customers') {
-        headers = ["客戶編號", "客戶暱稱", "連絡電話", "配送地址", "客戶備註"];
-        data = [
-            ["A001", "陳小明", "0912-345-678", "台北市信義區信義路五段7號", "常買紅茶"],
-            ["A002", "林美玲", "0928 765 432", "新北市板橋區縣民大道二段3號", "外送大樓需管理室收"]
-        ];
-        filename = "阿賢Easy購_客戶資料匯入範本.csv";
-    } else if (type === 'products') {
-        headers = ["商品編號", "商品名稱", "規格口味", "售價", "單位", "是否啟用"];
-        data = [
-            ["P001", "手工古早味蛋捲", "原味 / 12入", 180, "盒", "是"],
-            ["P002", "手作韭菜水餃", "30顆裝", 150, "包", "是"]
-        ];
-        filename = "阿賢Easy購_商品資料匯入範本.csv";
-    } else if (type === 'orders') {
-        headers = ["客戶編號", "客戶暱稱", "連絡電話", "外送地址", "取貨方式", "付款狀態", "商品編號", "商品名稱", "數量", "單價", "訂單備註"];
-        data = [
-            ["A001", "陳小明", "0912-345-678", "", "自取", "已付款", "P001", "手工古早味蛋捲", 2, 180, "週六拿"],
-            ["A001", "陳小明", "0912-345-678", "", "自取", "已付款", "P005", "阿賢特調冰紅茶", 3, 60, "同上合併"],
-            ["A002", "林美玲", "0928 765 432", "新北市板橋區縣民大道二段3號", "外送", "未付款", "P003", "手作韭菜水餃", 2, 150, ""]
-        ];
-        filename = "阿賢Easy購_訂單資料匯入範本.csv";
-    }
-
-    // 產出 CSV 字串 (採用 BOM UTF-8 以防 Excel 開啟時亂碼)
-    let csvContent = "\uFEFF";
-    csvContent += headers.join(",") + "\n";
-    data.forEach(row => {
-        // 若欄位中包含英文逗號，需使用引號包起
-        const formattedRow = row.map(val => {
-            const valStr = String(val);
-            if (valStr.includes(',')) return `"${valStr}"`;
-            return valStr;
-        });
-        csvContent += formattedRow.join(",") + "\n";
-    });
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement("a");
-    if (link.download !== undefined) {
-        const url = URL.createObjectURL(blob);
-        link.setAttribute("href", url);
-        link.setAttribute("download", filename);
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    }
-}
-
-function triggerFileInput() {
-    document.getElementById('excel-file-input').click();
-}
-
-function handleFileSelect(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    document.getElementById('selected-file-name').textContent = file.name;
-    document.getElementById('selected-file-info').style.display = 'block';
-
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, { type: 'array' });
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
-        
-        // 轉為 JSON
-        const rawJson = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-        parseAndValidateImportData(rawJson);
-    };
-    reader.readAsArrayBuffer(file);
-}
-
-// 解析並檢驗 Excel 資料
-function parseAndValidateImportData(matrix) {
-    if (matrix.length < 2) {
-        alert("匯入的檔案內容為空或無標題列！");
-        return;
-    }
-
-    const headers = matrix[0].map(h => String(h).trim());
-    const rows = matrix.slice(1).filter(r => r.length > 0 && r.some(cell => cell !== null && cell !== "")); // 排除空列
-
-    importErrors = [];
-    importWarnings = [];
-    importStats = { total: rows.length, newCount: 0, updateCount: 0, dupCount: 0, errCount: 0 };
-    
-    let previewHtmlHead = "<tr><th>Excel列</th>";
-    headers.forEach(h => {
-        previewHtmlHead += `<th>${escapeHtml(h)}</th>`;
-    });
-    previewHtmlHead += "</tr>";
-    document.getElementById('import-preview-thead').innerHTML = previewHtmlHead;
-
-    let previewHtmlBody = "";
-    importedData = [];
-
-    // --- 1. 客戶資料匯入處理 ---
-    if (currentImportType === 'customers') {
-        rows.forEach((row, i) => {
-            const rowNum = i + 2; // Excel 2行開始
-            const id = getCellValue(row, headers, "客戶編號");
-            const nickname = getCellValue(row, headers, "客戶暱稱");
-            const phone = getCellValue(row, headers, "連絡電話");
-            const address = getCellValue(row, headers, "配送地址") || "";
-            const notes = getCellValue(row, headers, "客戶備註") || "";
-
-            let rowHasError = false;
-            
-            // 驗證
-            if (!id) {
-                importErrors.push({ row: rowNum, field: "客戶編號", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!nickname) {
-                importErrors.push({ row: rowNum, field: "客戶暱稱", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!phone) {
-                importErrors.push({ row: rowNum, field: "連絡電話", reason: "必填欄位空白" });
-                rowHasError = true;
-            } else {
-                // 電話格式檢查 (防呆至少要有數字)
-                const numbers = phone.replace(/\D/g, "");
-                if (numbers.length < 7) {
-                    importErrors.push({ row: rowNum, field: "連絡電話", reason: "格式錯誤，長度太短" });
-                    rowHasError = true;
-                }
-            }
-
-            // 判斷新增或更新
-            let isUpdate = false;
-            if (!rowHasError) {
-                const exist = state.customers.find(c => c.id === id);
-                if (exist) {
-                    isUpdate = true;
-                    importStats.updateCount++;
-                } else {
-                    importStats.newCount++;
-                }
-
-                // 疑似重複客戶警示
-                const cleanPhone = formatPhoneForCompare(phone);
-                state.customers.forEach(c => {
-                    if (c.id === id) return; // 略過主鍵更新的情況
-
-                    let warningMsg = "";
-                    if (formatPhoneForCompare(c.phone) === cleanPhone) {
-                        warningMsg = `列 ${rowNum} 連絡電話與系統內 [${c.id}] ${c.nickname} 相同`;
-                    } else if (nickname && address && c.nickname === nickname && c.address === address) {
-                        warningMsg = `列 ${rowNum} 暱稱與外送地址皆與系統內 [${c.id}] 相同`;
-                    }
-
-                    if (warningMsg) {
-                        importWarnings.push(warningMsg);
-                        importStats.dupCount++;
-                    }
-                });
-
-                importedData.push({ id, nickname, phone, address, notes });
-            } else {
-                importStats.errCount++;
-            }
-
-            // 渲染預覽列
-            previewHtmlBody += `<tr class="${rowHasError ? 'style="background-color:#FFF2F2; color:#D63D3B;"' : ''}">`;
-            previewHtmlBody += `<td>${rowNum}</td>`;
-            headers.forEach(h => {
-                const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
-            });
-            previewHtmlBody += "</tr>";
-        });
-    } 
-    // --- 2. 商品資料匯入處理 ---
-    else if (currentImportType === 'products') {
-        rows.forEach((row, i) => {
-            const rowNum = i + 2;
-            const id = getCellValue(row, headers, "商品編號");
-            const name = getCellValue(row, headers, "商品名稱");
-            const specs = getCellValue(row, headers, "規格口味") || "";
-            const priceVal = getCellValue(row, headers, "售價");
-            const unit = getCellValue(row, headers, "單位");
-            const enabledStr = getCellValue(row, headers, "是否啟用") || "是";
-
-            let rowHasError = false;
-
-            if (!id) {
-                importErrors.push({ row: rowNum, field: "商品編號", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!name) {
-                importErrors.push({ row: rowNum, field: "商品名稱", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!priceVal) {
-                importErrors.push({ row: rowNum, field: "售價", reason: "必填欄位空白" });
-                rowHasError = true;
-            } else {
-                const price = parseFloat(priceVal);
-                if (isNaN(price)) {
-                    importErrors.push({ row: rowNum, field: "售價", reason: "售價不是數字" });
-                    rowHasError = true;
-                } else if (price < 0) {
-                    importErrors.push({ row: rowNum, field: "售價", reason: "售價不能小於 0" });
-                    rowHasError = true;
-                }
-            }
-            if (!unit) {
-                importErrors.push({ row: rowNum, field: "單位", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-
-            const enabled = ["是", "啟用", "true", "y"].includes(String(enabledStr).trim().toLowerCase());
-
-            if (!rowHasError) {
-                const exist = state.products.find(p => p.id === id);
-                if (exist) {
-                    importStats.updateCount++;
-                } else {
-                    importStats.newCount++;
-                }
-                importedData.push({ id, name, specs, price: parseFloat(priceVal), unit, enabled, photo: "" });
-            } else {
-                importStats.errCount++;
-            }
-
-            previewHtmlBody += `<tr><td>${rowNum}</td>`;
-            headers.forEach(h => {
-                const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
-            });
-            previewHtmlBody += "</tr>";
-        });
-    }
-    // --- 3. 訂單資料匯入處理 (重點：多行合併同客戶) ---
-    else if (currentImportType === 'orders') {
-        // 先依照「客戶編號」將明細分組
-        const groups = {}; // customerId -> [rows]
-        
-        rows.forEach((row, i) => {
-            const rowNum = i + 2;
-            const custId = getCellValue(row, headers, "客戶編號");
-            const nickname = getCellValue(row, headers, "客戶暱稱");
-            const phone = getCellValue(row, headers, "連絡電話");
-            const address = getCellValue(row, headers, "外送地址") || "";
-            const pickupType = getCellValue(row, headers, "取貨方式");
-            const paymentStatus = getCellValue(row, headers, "付款狀態");
-            const prodId = getCellValue(row, headers, "商品編號");
-            const prodName = getCellValue(row, headers, "商品名稱");
-            const qtyVal = getCellValue(row, headers, "數量");
-            const priceVal = getCellValue(row, headers, "單價");
-            const orderNotes = getCellValue(row, headers, "訂單備註") || "";
-
-            let rowHasError = false;
-
-            // 格式與欄位驗證
-            if (!custId) {
-                importErrors.push({ row: rowNum, field: "客戶編號", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!nickname) {
-                importErrors.push({ row: rowNum, field: "客戶暱稱", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!phone) {
-                importErrors.push({ row: rowNum, field: "連絡電話", reason: "必填欄位空白" });
-                rowHasError = true;
-            }
-            if (!pickupType) {
-                importErrors.push({ row: rowNum, field: "取貨方式", reason: "必填欄位空白" });
-                rowHasError = true;
-            } else if (!["外送", "自取"].includes(pickupType)) {
-                importErrors.push({ row: rowNum, field: "取貨方式", reason: "取貨方式不是外送或自取" });
-                rowHasError = true;
-            }
-            if (pickupType === "外送" && !address) {
-                importErrors.push({ row: rowNum, field: "外送地址", reason: "外送時，地址為必填項目" });
-                rowHasError = true;
-            }
-            if (!paymentStatus) {
-                importErrors.push({ row: rowNum, field: "付款狀態", reason: "必填欄位空白" });
-                rowHasError = true;
-            } else if (!["已付款", "未付款"].includes(paymentStatus)) {
-                importErrors.push({ row: rowNum, field: "付款狀態", reason: "付款狀態格式錯誤 (限填已付款或未付款)" });
-                rowHasError = true;
-            }
-            if (!prodId) {
-                importErrors.push({ row: rowNum, field: "商品編號", reason: "商品編號空白" });
-                rowHasError = true;
-            } else {
-                const prod = state.products.find(p => p.id === prodId);
-                if (!prod) {
-                    importErrors.push({ row: rowNum, field: "商品編號", reason: `商品編號 [${prodId}] 不存在` });
-                    rowHasError = true;
-                }
-            }
-            if (!qtyVal) {
-                importErrors.push({ row: rowNum, field: "數量", reason: "數量空白" });
-                rowHasError = true;
-            } else {
-                const qty = parseInt(qtyVal, 10);
-                if (isNaN(qty)) {
-                    importErrors.push({ row: rowNum, field: "數量", reason: "數量不是數字" });
-                    rowHasError = true;
-                } else if (qty <= 0) {
-                    importErrors.push({ row: rowNum, field: "數量", reason: "數量小於或等於零" });
-                    rowHasError = true;
-                }
-            }
-
-            // 售價數值檢查 (若為空則套用資料庫預設售價)
-            let price = 0;
-            if (priceVal) {
-                price = parseFloat(priceVal);
-                if (isNaN(price)) {
-                    importErrors.push({ row: rowNum, field: "單價", reason: "單價不是數字" });
-                    rowHasError = true;
-                }
-            } else if (prodId) {
-                const prod = state.products.find(p => p.id === prodId);
-                price = prod ? prod.price : 0;
-            }
-
-            if (!rowHasError) {
-                if (!groups[custId]) {
-                    groups[custId] = {
-                        customerId: custId,
-                        customerNickname: nickname,
-                        phone: phone,
-                        address: address,
-                        pickupType: pickupType,
-                        paymentStatus: paymentStatus,
-                        orderStatus: "新訂單",
-                        notes: orderNotes,
-                        items: []
-                    };
-                }
-                
-                // 檢查此商品是否已被加入本訂單
-                const existItem = groups[custId].items.find(it => it.productId === prodId);
-                if (existItem) {
-                    existItem.quantity += parseInt(qtyVal, 10); // 重複出現則數量累加
-                } else {
-                    const prod = state.products.find(p => p.id === prodId);
-                    groups[custId].items.push({
-                        productId: prodId,
-                        productName: prodName || (prod ? prod.name : ""),
-                        specs: prod ? prod.specs : "",
-                        quantity: parseInt(qtyVal, 10),
-                        price: price
-                    });
-                }
-            } else {
-                importStats.errCount++;
-            }
-
-            previewHtmlBody += `<tr><td>${rowNum}</td>`;
-            headers.forEach(h => {
-                const idx = headers.indexOf(h);
-                previewHtmlBody += `<td>${escapeHtml(row[idx] !== undefined ? row[idx] : '')}</td>`;
-            });
-            previewHtmlBody += "</tr>";
-        });
-
-        // 轉換為訂單陣列，並推算新增與更新數
-        if (importErrors.length === 0) {
-            Object.values(groups).forEach(g => {
-                const totalAmount = g.items.reduce((s, it) => s + (it.price * it.quantity), 0);
-                
-                // 檢查目前團購活動中，該客戶是否已有訂單
-                const existOrder = state.orders.find(o => o.groupBuyId === state.activeGroupBuyId && o.customerId === g.customerId);
-                
-                let orderId = "";
-                if (existOrder) {
-                    orderId = existOrder.id;
-                    importStats.updateCount++;
-                } else {
-                    importStats.newCount++;
-                }
-
-                importedData.push({
-                    id: orderId, // 留空代表新建
-                    groupBuyId: state.activeGroupBuyId,
-                    customerId: g.customerId,
-                    customerNickname: g.customerNickname,
-                    phone: g.phone,
-                    address: g.address,
-                    pickupType: g.pickupType,
-                    items: g.items,
-                    totalAmount: totalAmount,
-                    paymentStatus: g.paymentStatus,
-                    orderStatus: g.orderStatus,
-                    notes: g.notes,
-                    createdDate: new Date().toLocaleString('zh-Hant-TW', { hour12: false }).replace(/\//g, '-'),
-                    checkedProductIds: []
-                });
-            });
-        }
-    }
-
-    // 渲染 UI 統計面板
-    document.getElementById('import-stat-total').textContent = importStats.total;
-    document.getElementById('import-stat-new').textContent = importStats.newCount;
-    document.getElementById('import-stat-update').textContent = importStats.updateCount;
-    document.getElementById('import-stat-dup').textContent = importStats.dupCount;
-    document.getElementById('import-stat-err').textContent = importStats.errCount;
-
-    // 顯示錯誤警示
-    const errWrapper = document.getElementById('import-errors-wrapper');
-    const errContainer = document.getElementById('import-errors-container');
-    if (importErrors.length > 0) {
-        errWrapper.style.display = 'block';
-        let errHtml = "";
-        importErrors.forEach(err => {
-            errHtml += `<div class="error-item"><span class="row-num">第 ${err.row} 列</span> <strong>[${escapeHtml(err.field)}]</strong> ${escapeHtml(err.reason)}</div>`;
-        });
-        errContainer.innerHTML = errHtml;
-        document.getElementById('btn-execute-import').disabled = true; // 包含錯誤，鎖定匯入按鈕
-    } else {
-        errWrapper.style.display = 'none';
-        document.getElementById('btn-execute-import').disabled = false; // 無錯誤，解鎖
-    }
-
-    // 顯示重複警示
-    const warnWrapper = document.getElementById('import-warnings-wrapper');
-    const warnContainer = document.getElementById('import-warnings-container');
-    if (importWarnings.length > 0) {
-        warnWrapper.style.display = 'block';
-        let warnHtml = "";
-        importWarnings.forEach(w => {
-            warnHtml += `<li>${escapeHtml(w)}</li>`;
-        });
-        warnContainer.innerHTML = warnHtml;
-    } else {
-        warnWrapper.style.display = 'none';
-    }
-
-    document.getElementById('import-preview-tbody').innerHTML = previewHtmlBody;
-    document.getElementById('import-step-3').style.display = 'block';
-}
-
-function getCellValue(row, headers, targetHeader) {
-    const idx = headers.indexOf(targetHeader);
-    if (idx === -1 || row[idx] === undefined) return null;
-    return String(row[idx]).trim();
-}
-
-// 執行正式匯入寫入
-function executeImport() {
-    if (!importedData || importedData.length === 0) return;
-
-    if (currentImportType === 'customers') {
-        importedData.forEach(c => {
-            const idx = state.customers.findIndex(x => x.id === c.id);
-            if (idx > -1) {
-                // 更新
-                state.customers[idx] = c;
-            } else {
-                // 新增
-                state.customers.push(c);
-            }
-        });
-        saveStateToStorage();
-        alert(`已成功匯入 ${importedData.length} 筆客戶資料！`);
-    } else if (currentImportType === 'products') {
-        importedData.forEach(p => {
-            const idx = state.products.findIndex(x => x.id === p.id);
-            if (idx > -1) {
-                state.products[idx] = p;
-            } else {
-                state.products.push(p);
-            }
-        });
-        saveStateToStorage();
-        alert(`已成功匯入 ${importedData.length} 筆商品資料！`);
-    } else if (currentImportType === 'orders') {
-        // 新增或覆蓋當前團購的訂單
-        let newOrdersAdded = 0;
-        let ordersUpdated = 0;
-
-        importedData.forEach(newO => {
-            // 建立或自動更新客戶庫資訊 (若不存在則順便自動建立客戶，防呆且方便！)
-            const cExist = state.customers.find(c => c.id === newO.customerId);
-            if (!cExist) {
-                state.customers.push({
-                    id: newO.customerId,
-                    nickname: newO.customerNickname,
-                    phone: newO.phone,
-                    address: newO.address,
-                    notes: "匯入訂單時自動建立的客戶"
-                });
-            }
-
-            const idx = state.orders.findIndex(o => o.groupBuyId === newO.groupBuyId && o.customerId === newO.customerId);
-            if (idx > -1) {
-                // 原本已有訂單，複寫商品明細
-                state.orders[idx].items = newO.items;
-                state.orders[idx].totalAmount = newO.totalAmount;
-                state.orders[idx].paymentStatus = newO.paymentStatus;
-                state.orders[idx].pickupType = newO.pickupType;
-                state.orders[idx].address = newO.address;
-                state.orders[idx].phone = newO.phone;
-                state.orders[idx].customerNickname = newO.customerNickname;
-                ordersUpdated++;
-            } else {
-                // 新增
-                // 計算 ID ORD00001
-                let maxNum = 0;
-                state.orders.forEach(o => {
-                    const match = o.id.match(/^ORD(\d+)$/i);
-                    if (match) {
-                        const num = parseInt(match[1], 10);
-                        if (num > maxNum) maxNum = num;
-                    }
-                });
-                newO.id = 'ORD' + String(maxNum + 1).padStart(5, '0');
-                state.orders.push(newO);
-                newOrdersAdded++;
-            }
-        });
-
-        saveStateToStorage();
-        alert(`訂單匯入成功！新增訂單：${newOrdersAdded} 筆，覆蓋更新：${ordersUpdated} 筆。`);
-    }
-
-    resetImportWizard();
-    if (currentViewId === 'dashboard') renderDashboard();
-}
-
-
 // ==========================================================================
 // 9. 通用 Modal 控制與其他輔助工具
 // ==========================================================================
@@ -3443,60 +2860,8 @@ function escapeLineText(value) {
     return escapeHtml(value);
 }
 
+// LINE 收件匣：支援「P023 A+3」、更正與取消命令。
 function renderLineInbox() {
-    const tbody = document.getElementById('line-inbox-tbody');
-    if (!tbody) return;
-    if (!state.lineInbox.length) {
-        tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">尚無 LINE 收件資料。</td></tr>';
-        return;
-    }
-    tbody.innerHTML = state.lineInbox.map(row => {
-        let items = row.parsed_items || row.parsedItems || [];
-        if (typeof items === 'string') { try { items = JSON.parse(items); } catch (_error) { items = []; } }
-        const status = row.status || '已接收';
-        const canImport = status === '已解析' && Boolean(row.customer_id || row.customerId);
-        return `<tr>
-            <td><strong>${escapeLineText(row.display_name || row.displayName)}</strong><small>${escapeLineText(row.line_user_id || row.lineUserId)}</small></td>
-            <td>${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small></td>
-            <td>${escapeLineText(row.raw_message || row.rawMessage)}</td><td>${escapeLineText(row.normalized_message || row.normalizedMessage)}</td>
-            <td>${items.map(item => `${escapeLineText(item.productCode)} × ${Number(item.quantity)}`).join('<br>')}</td>
-            <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
-            <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
-            <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInbox('${encodeURIComponent(row.message_id || row.messageId)}')">轉正式訂單</button></td>
-        </tr>`;
-    }).join('');
-}
-
-async function loadLineInbox() {
-    const base = getLineApiBase();
-    if (!base) { state.lineInbox = []; renderLineInbox(); return; }
-    try {
-        const response = await fetch(`${base}/api/line-inbox`, { headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` } });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        state.lineInbox = await response.json();
-        renderLineInbox();
-    } catch (error) {
-        state.lineInbox = [];
-        renderLineInbox();
-        alert(`無法讀取 LINE 訂單收件匣：${error.message}`);
-    }
-}
-
-async function importLineInbox(encodedMessageId) {
-    if (!confirm('確定將這筆 LINE 收件資料轉為正式訂單？')) return;
-    const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` }
-    });
-    const result = await response.json();
-    if (!response.ok) { alert(result.error || '轉單失敗'); return; }
-    await loadLineInbox();
-    alert(result.imported ? '已轉為正式訂單。' : '此訊息先前已完成轉單。');
-}
-
-// LINE 收件匣 v2：支援「P023 A+3」、更正與取消命令。
-// 這些同名函式刻意放在舊版之後，讓既有 onclick 與頁面生命週期不必改動。
-function renderLineInboxV2() {
     const tbody = document.getElementById('line-inbox-tbody');
     if (!tbody) return;
     if (!state.lineInbox.length) {
@@ -3529,27 +2894,27 @@ function renderLineInboxV2() {
             <td>${itemText}</td>
             <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
             <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
-            <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInboxV2('${encodeURIComponent(row.message_id || row.messageId)}')">${action === 'cancel' ? '確認取消' : action === 'replace' ? '確認更正' : '轉正式訂單'}</button></td>
+            <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInbox('${encodeURIComponent(row.message_id || row.messageId)}')">${action === 'cancel' ? '確認取消' : action === 'replace' ? '確認更正' : '轉正式訂單'}</button></td>
         </tr>`;
     }).join('');
 }
 
-async function loadLineInboxV2() {
+async function loadLineInbox() {
     const base = getLineApiBase();
-    if (!base) { state.lineInbox = []; renderLineInboxV2(); return; }
+    if (!base) { state.lineInbox = []; renderLineInbox(); return; }
     try {
         const response = await fetch(`${base}/api/line-inbox`, { headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` } });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         state.lineInbox = await response.json();
-        renderLineInboxV2();
+        renderLineInbox();
     } catch (error) {
         state.lineInbox = [];
-        renderLineInboxV2();
+        renderLineInbox();
         alert(`無法讀取 LINE 訂單收件匣：${error.message}`);
     }
 }
 
-async function importLineInboxV2(encodedMessageId) {
+async function importLineInbox(encodedMessageId) {
     if (!confirm('確定要處理這筆 LINE 收件資料嗎？')) return;
     const response = await fetch(`${getLineApiBase()}/api/line-inbox/${encodedMessageId}/import`, {
         method: 'POST',
@@ -3557,7 +2922,7 @@ async function importLineInboxV2(encodedMessageId) {
     });
     const result = await response.json();
     if (!response.ok) { alert(result.error || '處理失敗'); return; }
-    await loadLineInboxV2();
+    await loadLineInbox();
     alert(result.imported ? '處理完成。' : '這筆資料先前已處理。');
 }
 
@@ -3600,11 +2965,6 @@ async function confirmLineBind() {
         return;
     }
     closeLineBindModal();
-    await loadLineInboxV2();
+    await loadLineInbox();
     alert(`綁定完成！${customer.id}｜${customer.nickname}，共回填 ${result.updated_messages} 則訊息。之後這位客戶的留言會自動配對。`);
 }
-
-// 保留原本頁面呼叫名稱。
-renderLineInbox = renderLineInboxV2;
-loadLineInbox = loadLineInboxV2;
-importLineInbox = importLineInboxV2;

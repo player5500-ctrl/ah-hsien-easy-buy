@@ -287,7 +287,7 @@ async function processPostback(env, record) {
             return { processed: false, error: "商品已停售" };
         }
 
-        const existingCustomer = await env.DB.prepare("SELECT id FROM customers WHERE line_user_id = ? LIMIT 1").bind(record.lineUserId).first();
+        const existingCustomer = await env.DB.prepare("SELECT id, nickname FROM customers WHERE line_user_id = ? LIMIT 1").bind(record.lineUserId).first();
         const customerId = existingCustomer?.id || await stableId("LINE", record.lineUserId);
         const customerName = String(record.displayName || "LINE 客戶").slice(0, 100);
         const existingOrder = await env.DB.prepare("SELECT id FROM orders WHERE customer_id = ? AND group_buy_id = ? LIMIT 1")
@@ -312,14 +312,24 @@ async function processPostback(env, record) {
             return { processed: true, action: parsed.action };
         }
 
+        // 收件匣以「人看得懂」的文字記錄商品卡操作，並帶上已配對的客戶（2026-07-23 體驗修正）
+        const productLabel = context.line_code || context.product_id;
+        const friendlyMessage = parsed.action === "set_quantity"
+            ? `商品卡：${productLabel} 設為 ${parsed.quantity} 份`
+            : `商品卡：取消 ${productLabel}`;
+        const inboxCustomerId = existingCustomer?.id || null;
+        const inboxInsert = env.DB.prepare(`INSERT OR IGNORE INTO line_order_inbox
+            (message_id, webhook_event_id, group_id, line_user_id, display_name, customer_id, customer_nickname,
+            raw_message, normalized_message, parsed_items, action, message_time, status, processed_at, related_order_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, CURRENT_TIMESTAMP, ?)`)
+            .bind(`postback:${record.webhookEventId}`, record.webhookEventId, record.groupId, record.lineUserId,
+                customerName, inboxCustomerId, existingCustomer?.nickname || null,
+                friendlyMessage, record.data, parsed.action === "set_quantity" ? "replace" : "cancel",
+                isoFromTimestamp(record.timestamp), LineOrder.STATUS.IMPORTED, orderId);
+
         if (parsed.action === "set_quantity") {
             statements.push(
-                env.DB.prepare(`INSERT OR IGNORE INTO line_order_inbox
-                    (message_id, webhook_event_id, group_id, line_user_id, display_name, raw_message, normalized_message,
-                    parsed_items, action, message_time, status, processed_at, related_order_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, '[]', 'replace', ?, ?, CURRENT_TIMESTAMP, ?)`)
-                    .bind(`postback:${record.webhookEventId}`, record.webhookEventId, record.groupId, record.lineUserId,
-                        customerName, record.data, record.data, isoFromTimestamp(record.timestamp), LineOrder.STATUS.IMPORTED, orderId),
+                inboxInsert,
                 env.DB.prepare(`INSERT OR IGNORE INTO orders
                     (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
                     VALUES (?, ?, ?, '', '新訂單', ?, ?, 0, CURRENT_TIMESTAMP)`)
@@ -333,7 +343,10 @@ async function processPostback(env, record) {
                     .bind(orderId, context.line_code || context.product_id, context.product_id, parsed.quantity, context.price, context.price, parsed.quantity)
             );
         } else {
-            statements.push(env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND product_id = ?").bind(orderId, parsed.productId));
+            statements.push(
+                inboxInsert,
+                env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND product_id = ?").bind(orderId, parsed.productId)
+            );
         }
 
         statements.push(

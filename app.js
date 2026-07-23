@@ -1356,7 +1356,9 @@ async function syncLineOrdersFromCloud() {
             items: activeItems,
             totalAmount: Number(o.total_amount) || 0,
             paymentStatus: (existing && existing.paymentStatus) || '未付款',
-            orderStatus: o.status === '已取消' ? '已取消' : ((existing && existing.orderStatus && existing.orderStatus !== '新訂單') ? existing.orderStatus : '新訂單'),
+            // 只保留本地的包貨流程狀態；取消／取消後復活（再下單）一律以雲端為準（2026-07-23 修正）
+            orderStatus: o.status === '已取消' ? '已取消'
+                : ((existing && ['已確認', '已包貨', '已完成'].includes(existing.orderStatus)) ? existing.orderStatus : '新訂單'),
             notes: (existing && existing.notes) || 'LINE 商品卡靜默收單',
             createdDate: String(o.created_at || '').replace('T', ' ').slice(0, 19),
             checkedProductIds: (existing && existing.checkedProductIds) || []

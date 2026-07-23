@@ -1426,7 +1426,13 @@ function openLineNoteModal() {
         notes: gb.notes || ''
     } : {});
     if (!note) {
-        alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
+        const hasEnabledProducts = state.products.some(p => p.enabled);
+        const gbHasSelection = gb && Array.isArray(gb.productIds) && gb.productIds.length > 0;
+        if (hasEnabledProducts && gbHasSelection) {
+            alert(`目前團購「${gb.name}」勾選的商品都已停用。\n請到「團購活動」編輯本團商品勾選，或切換當前團購。`);
+        } else {
+            alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
+        }
         return;
     }
     document.getElementById('line-note-textarea').value = note;

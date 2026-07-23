@@ -543,7 +543,9 @@ function renderGroupBuys() {
                 <td>
                     <div class="button-group">
                         <button class="btn btn-secondary btn-sm" onclick="openGroupBuyModal('${gb.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
-                        <button class="btn btn-secondary btn-sm" onclick="selectGroupBuyDirectly('${gb.id}')"><i class="fa-solid fa-circle-check"></i> 選定</button>
+                        ${gb.id === state.activeGroupBuyId
+                            ? '<button class="btn btn-primary btn-sm" disabled style="opacity:1; cursor:default;"><i class="fa-solid fa-circle-check"></i> 目前團購</button>'
+                            : `<button class="btn btn-secondary btn-sm" onclick="selectGroupBuyDirectly('${gb.id}')"><i class="fa-solid fa-circle-check"></i> 選定</button>`}
                         <button class="btn btn-teal btn-sm" onclick="copyProductsFromPreviousGroup('${gb.id}')" title="複製前一團的商品列表"><i class="fa-solid fa-copy"></i> 複製前團商品</button>
                         <button class="btn btn-primary btn-sm" onclick="openLinePublishModal('${gb.id}')"><i class="fa-brands fa-line"></i> 發布到 LINE 群組</button>
                     </div>
@@ -557,7 +559,9 @@ function renderGroupBuys() {
 function selectGroupBuyDirectly(id) {
     onGroupBuyChange(id);
     renderCurrentGroupBuySelect();
-    alert("已切換目前選定之團購活動！");
+    renderGroupBuys(); // 立即更新「目前團購」按鈕狀態
+    const gb = state.groupBuys.find(g => g.id === id);
+    alert(`已切換目前團購為：${gb ? gb.name : id}`);
 }
 
 function copyProductsFromPreviousGroup(targetGroupId) {

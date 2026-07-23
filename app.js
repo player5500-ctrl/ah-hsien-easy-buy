@@ -2897,6 +2897,20 @@ function escapeLineText(value) {
 }
 
 // LINE 收件匣：支援「P023 A+3」、更正與取消命令。
+// 把商品卡 Postback 的原始參數轉成人看得懂的文字（相容既有舊紀錄）
+function friendlyPostbackText(value) {
+    const text = String(value || '');
+    if (!/^action=/.test(text)) return text;
+    const params = new URLSearchParams(text);
+    const product = params.get('productId') || '';
+    switch (params.get('action')) {
+        case 'set_quantity': return `商品卡：${product} 設為 ${params.get('quantity')} 份`;
+        case 'cancel_item': return `商品卡：取消 ${product}`;
+        case 'view_order': return `商品卡：查看訂單`;
+        default: return text;
+    }
+}
+
 function renderLineInbox() {
     const tbody = document.getElementById('line-inbox-tbody');
     if (!tbody) return;
@@ -2925,8 +2939,8 @@ function renderLineInbox() {
         return `<tr>
             <td><strong>${escapeLineText(row.display_name || row.displayName)}</strong><small>${escapeLineText(row.line_user_id || row.lineUserId)}</small></td>
             <td>${customerCell}</td>
-            <td><span class="line-action line-action-${escapeLineText(action)}">${actionLabels[action] || action}</span><br>${escapeLineText(row.raw_message || row.rawMessage)}</td>
-            <td>${escapeLineText(row.normalized_message || row.normalizedMessage)}</td>
+            <td><span class="line-action line-action-${escapeLineText(action)}">${actionLabels[action] || action}</span><br>${escapeLineText(friendlyPostbackText(row.raw_message || row.rawMessage))}</td>
+            <td>${escapeLineText(friendlyPostbackText(row.normalized_message || row.normalizedMessage))}</td>
             <td>${itemText}</td>
             <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
             <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>

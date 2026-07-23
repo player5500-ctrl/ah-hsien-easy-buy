@@ -579,11 +579,35 @@ function copyProductsFromPreviousGroup(targetGroupId) {
 }
 
 // 團購活動 Modal 控制
+// 團購商品勾選清單（記事本文案與 LINE 商品卡只列本團商品）
+function renderGroupBuyProductChecklist(selectedIds = []) {
+    const container = document.getElementById('gb-products');
+    if (!container) return;
+    if (!state.products.length) {
+        container.innerHTML = '<small class="text-muted">尚無商品，請先到「商品管理」新增。</small>';
+        return;
+    }
+    const selected = new Set(selectedIds);
+    container.innerHTML = [...state.products]
+        .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
+        .map(p => `<label style="display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer;">
+            <input type="checkbox" class="gb-product-checkbox" value="${escapeHtml(p.id)}" ${selected.has(p.id) ? 'checked' : ''}>
+            <span>${escapeHtml(p.id)}｜${escapeHtml(p.name)}${p.enabled ? '' : '（已停用）'}</span>
+        </label>`).join('');
+}
+
+// 取得團購綁定的商品；未勾選（舊資料）則回傳所有商品（維持原行為）
+function groupBuyProducts(gb) {
+    const ids = gb && Array.isArray(gb.productIds) ? gb.productIds : [];
+    if (!ids.length) return state.products;
+    return state.products.filter(p => ids.includes(p.id));
+}
+
 function openGroupBuyModal(id = '') {
     const modal = document.getElementById('group-buy-modal');
     const title = document.getElementById('group-buy-modal-title');
     const form = document.getElementById('group-buy-form');
-    
+
     form.reset();
     document.getElementById('group-buy-id').value = id;
 
@@ -596,11 +620,13 @@ function openGroupBuyModal(id = '') {
             document.getElementById('gb-end-date').value = gb.endDate;
             document.getElementById('gb-status').value = gb.status;
             document.getElementById('gb-notes').value = gb.notes;
+            renderGroupBuyProductChecklist(gb.productIds || []);
         }
     } else {
         title.textContent = "新增團購活動";
         document.getElementById('gb-status').value = "開放";
         document.getElementById('gb-start-date').value = new Date().toISOString().split('T')[0];
+        renderGroupBuyProductChecklist([]);
     }
     modal.classList.add('show');
 }
@@ -616,6 +642,7 @@ function saveGroupBuy() {
     const endDate = document.getElementById('gb-end-date').value;
     const status = document.getElementById('gb-status').value;
     const notes = document.getElementById('gb-notes').value.trim();
+    const productIds = [...document.querySelectorAll('.gb-product-checkbox:checked')].map(input => input.value);
 
     if (!name) {
         alert("請輸入團購活動名稱！");
@@ -631,6 +658,7 @@ function saveGroupBuy() {
             gb.endDate = endDate;
             gb.status = status;
             gb.notes = notes;
+            gb.productIds = productIds;
         }
     } else {
         // 新增
@@ -640,7 +668,7 @@ function saveGroupBuy() {
             return match ? Math.max(max, parseInt(match[1], 10)) : max;
         }, 0);
         const newId = "GB" + String(maxGbNum + 1).padStart(3, '0');
-        state.groupBuys.push({ id: newId, name, startDate, endDate, status, notes });
+        state.groupBuys.push({ id: newId, name, startDate, endDate, status, notes, productIds });
         if (state.groupBuys.length === 1) {
             state.activeGroupBuyId = newId;
         }
@@ -670,8 +698,8 @@ async function openLinePublishModal(groupBuyId) {
     const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
     if (!groupBuy) return alert('找不到團購活動。');
     if (!groupBuy.endDate) return alert('請先設定團購截止日期，才能發布 LINE 商品卡。');
-    const products = state.products.filter(product => product.enabled);
-    if (!products.length) return alert('目前沒有啟用中的商品。');
+    const products = groupBuyProducts(groupBuy).filter(product => product.enabled);
+    if (!products.length) return alert('本團購沒有啟用中的商品（請在團購活動勾選商品，或啟用商品）。');
     if (!getCloudApiKey()) return alert('請先到「LINE 靜默收單設定」輸入管理 API 金鑰。');
 
     document.getElementById('line-publish-group-buy-id').value = groupBuyId;
@@ -751,7 +779,7 @@ async function publishLineProduct() {
                 ends_at: groupBuyDateTime(groupBuy.endDate, true),
                 status: groupBuyStatusForCloud(groupBuy.status),
                 notes: groupBuy.notes || null,
-                product_ids: [product.id]
+                product_ids: [...new Set([product.id, ...(groupBuy.productIds || [])])]
             })
         });
         if (groupResult.error || groupResult.skipped) throw new Error(groupResult.error || '團購尚未同步');
@@ -1391,7 +1419,8 @@ async function syncAllProductsToCloud() {
 // --- LINE 記事本文案 ---
 function openLineNoteModal() {
     const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
-    const note = LineNote.generateLineNote(state.products, gb ? {
+    // 只列「本團商品」；團購未勾選商品時退回所有啟用中商品
+    const note = LineNote.generateLineNote(groupBuyProducts(gb), gb ? {
         title: `阿賢Easy購｜${gb.name}`,
         deadline: gb.endDate || '',
         notes: gb.notes || ''
@@ -1410,7 +1439,8 @@ function closeLineNoteModal() {
 
 // 下載啟用中商品的圖片（LINE 記事本無法自動顯示連結圖片，需手動附圖；此功能方便一次存圖）
 async function downloadLineNoteImages() {
-    const targets = state.products.filter(p => p.enabled && /^https?:\/\//i.test(p.photo || ''));
+    const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
+    const targets = groupBuyProducts(gb).filter(p => p.enabled && /^https?:\/\//i.test(p.photo || ''));
     if (!targets.length) {
         alert('啟用中的商品沒有可下載的圖片（請先在商品管理上傳或填寫圖片網址）。');
         return;

@@ -1,0 +1,177 @@
+/* 阿賢 Easy 購｜LIFF 客戶端下單頁樣式（手機優先、米白底、橘主按鈕、圓角卡）
+   視覺語言對齊後台 styles.css：--primary-orange #FF7A00、--bg-cream #FAF9F6、圓角卡片。 */
+:root {
+    --primary-orange: #FF7A00;
+    --primary-orange-hover: #E56E00;
+    --bg-cream: #FAF9F6;
+    --bg-warm-gray: #F2EFE9;
+    --card-white: #FFFFFF;
+    --text-dark: #2D2D2D;
+    --text-muted: #7E7870;
+    --border-light: #EFECE6;
+    --danger: #C0392B;
+    --success: #1E8E5A;
+    --radius-lg: 20px;
+    --radius-md: 12px;
+    --radius-sm: 8px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-cream);
+    color: var(--text-dark);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", "Noto Sans TC", sans-serif;
+    font-size: 17px;
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    overflow-x: hidden;
+}
+
+.wrap {
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 16px 16px 40px;
+    width: 100%;
+}
+
+.card {
+    background: var(--card-white);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+}
+
+.hidden { display: none !important; }
+
+.product-image {
+    width: 100%;
+    aspect-ratio: 20 / 13;
+    object-fit: cover;
+    border-radius: var(--radius-md);
+    background: var(--bg-warm-gray);
+    margin-bottom: 14px;
+    display: block;
+}
+
+.product-name { font-size: 1.5rem; font-weight: 800; margin: 0 0 6px; word-break: break-word; }
+.product-specs { color: var(--text-muted); margin: 0 0 12px; font-size: 1rem; word-break: break-word; }
+
+.price-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.price-main { font-size: 1.7rem; font-weight: 800; color: var(--primary-orange); }
+.price-unit { color: var(--text-muted); font-size: 0.95rem; }
+.price-hint { color: var(--text-muted); font-size: 0.85rem; margin: 0 0 8px; }
+
+.section-title { font-size: 1.05rem; font-weight: 800; margin: 4px 0 12px; }
+
+.pickup-selector { display: flex; gap: 10px; margin: 8px 0 4px; }
+.pickup-btn {
+    flex: 1;
+    padding: 14px 8px;
+    border: 2px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--card-white);
+    color: var(--text-dark);
+    font-size: 1.05rem;
+    font-weight: 700;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: border-color .15s, background .15s;
+}
+.pickup-btn.active { border-color: var(--primary-orange); background: rgba(255, 122, 0, 0.08); color: var(--primary-orange); }
+
+.address-field { margin: 12px 0 4px; }
+.address-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 14px;
+    border: 2px solid var(--border-light);
+    border-radius: var(--radius-md);
+    font-size: 1.05rem;
+    color: var(--text-dark);
+    background: var(--card-white);
+    -webkit-tap-highlight-color: transparent;
+}
+.address-input:focus { outline: none; border-color: var(--primary-orange); }
+.address-input:disabled { background: var(--bg-warm-gray); color: #A69F94; }
+
+.qty-row { display: flex; align-items: center; justify-content: center; gap: 18px; margin: 14px 0; }
+.qty-btn {
+    width: 56px; height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: var(--primary-orange);
+    color: #fff;
+    font-size: 1.8rem;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    display: flex; align-items: center; justify-content: center;
+}
+.qty-btn:disabled { background: #E4DED4; color: #A69F94; }
+.qty-value { min-width: 64px; text-align: center; font-size: 2rem; font-weight: 800; }
+
+.subtotal-row { display: flex; justify-content: space-between; align-items: baseline; margin: 12px 0 4px; font-size: 1.1rem; }
+.subtotal-amount { font-size: 1.5rem; font-weight: 800; color: var(--primary-orange); }
+
+.btn {
+    display: block;
+    width: 100%;
+    padding: 16px;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 1.15rem;
+    font-weight: 800;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    margin-top: 10px;
+}
+.btn-primary { background: var(--primary-orange); color: #fff; }
+.btn-primary:active { background: var(--primary-orange-hover); }
+.btn-primary:disabled { background: #E4DED4; color: #A69F94; cursor: default; }
+.btn-secondary { background: var(--bg-warm-gray); color: var(--text-dark); }
+.btn-danger { background: #fff; color: var(--danger); border: 2px solid #F0D2CE; }
+.btn-sm { padding: 10px 14px; font-size: 0.95rem; margin-top: 0; width: auto; }
+
+.notice { border-radius: var(--radius-md); padding: 12px 14px; margin: 10px 0; font-size: 0.98rem; }
+.notice-warn { background: #FFF6E8; border: 1px solid #F5C877; color: #8A5A00; }
+.notice-danger { background: #FDECEA; border: 1px solid #F0B4AC; color: var(--danger); }
+
+.my-item {
+    display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;
+    padding: 12px 0; border-bottom: 1px solid var(--border-light);
+}
+.my-item:last-child { border-bottom: none; }
+.my-item-info { flex: 1; min-width: 0; }
+.my-item-name { font-weight: 700; word-break: break-word; }
+.my-item-meta { color: var(--text-muted); font-size: 0.9rem; margin-top: 2px; }
+.my-item-actions { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+
+.stats-line { font-size: 1rem; margin: 4px 0; }
+.stats-strong { font-weight: 800; color: var(--primary-orange); }
+.stats-per { color: var(--text-muted); font-size: 0.92rem; margin-top: 6px; word-break: break-word; }
+
+.success-check { font-size: 3.2rem; text-align: center; margin: 6px 0 4px; }
+.success-title { text-align: center; font-size: 1.5rem; font-weight: 800; margin: 0 0 14px; color: var(--success); }
+.success-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border-light); }
+.success-row:last-of-type { border-bottom: none; }
+.success-label { color: var(--text-muted); }
+.success-value { font-weight: 700; }
+
+.loading, .center-msg { text-align: center; color: var(--text-muted); padding: 40px 16px; font-size: 1.05rem; }
+
+.spinner {
+    width: 40px; height: 40px; margin: 0 auto 14px;
+    border: 4px solid var(--border-light);
+    border-top-color: var(--primary-orange);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-hint { color: var(--text-muted); text-align: center; padding: 12px 0; }

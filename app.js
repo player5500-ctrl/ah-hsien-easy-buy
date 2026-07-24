@@ -1096,6 +1096,8 @@ function openProductModal(id = '') {
             document.getElementById('prod-name').value = p.name;
             document.getElementById('prod-specs').value = p.specs;
             document.getElementById('prod-price').value = p.price;
+            document.getElementById('prod-pickup-price').value = (p.pickupPrice == null ? '' : p.pickupPrice);
+            document.getElementById('prod-delivery-price').value = (p.deliveryPrice == null ? '' : p.deliveryPrice);
             document.getElementById('prod-unit').value = p.unit;
             document.getElementById('prod-enabled').value = String(p.enabled);
             document.getElementById('prod-desc').value = p.description || '';
@@ -1130,6 +1132,8 @@ async function saveProduct() {
     const name = document.getElementById('prod-name').value.trim();
     const specs = document.getElementById('prod-specs').value.trim();
     const priceVal = document.getElementById('prod-price').value;
+    const pickupPriceVal = document.getElementById('prod-pickup-price').value;
+    const deliveryPriceVal = document.getElementById('prod-delivery-price').value;
     const unit = document.getElementById('prod-unit').value.trim();
     const enabled = document.getElementById('prod-enabled').value === "true";
     const description = document.getElementById('prod-desc').value.trim();
@@ -1146,6 +1150,18 @@ async function saveProduct() {
         return;
     }
 
+    // 雙價：自取價／外送價選填，留空＝null（下單時回退售價）；有填須為非負整數
+    const parseOptionalPrice = (raw, label) => {
+        if (raw == null || String(raw).trim() === '') return null;
+        const n = Math.round(Number(raw));
+        if (isNaN(n) || n < 0) { alert(`${label}必須是大於等於 0 的整數！`); return undefined; }
+        return n;
+    };
+    const pickupPrice = parseOptionalPrice(pickupPriceVal, '自取價');
+    if (pickupPrice === undefined) return;
+    const deliveryPrice = parseOptionalPrice(deliveryPriceVal, '外送價');
+    if (deliveryPrice === undefined) return;
+
     const existingIdx = state.products.findIndex(p => p.id === id);
     const isEdit = document.getElementById('prod-id').readOnly;
 
@@ -1157,11 +1173,11 @@ async function saveProduct() {
     if (isEdit) {
         // 編輯
         if (existingIdx > -1) {
-            state.products[existingIdx] = { id, name, specs, price, unit, enabled, description, photo };
+            state.products[existingIdx] = { id, name, specs, price, pickupPrice, deliveryPrice, unit, enabled, description, photo };
         }
     } else {
         // 新增
-        state.products.push({ id, name, specs, price, unit, enabled, description, photo });
+        state.products.push({ id, name, specs, price, pickupPrice, deliveryPrice, unit, enabled, description, photo });
     }
 
     saveStateToStorage();
@@ -1224,6 +1240,8 @@ function productToCloudPayload(p) {
         name: p.name,
         line_code: p.id,
         price: Math.round(Number(p.price) || 0),
+        pickup_price: (p.pickupPrice == null || p.pickupPrice === '') ? null : Math.round(Number(p.pickupPrice)),
+        delivery_price: (p.deliveryPrice == null || p.deliveryPrice === '') ? null : Math.round(Number(p.deliveryPrice)),
         specs: p.specs || null,
         unit: p.unit || '份',
         description: p.description || [p.specs, p.unit && `單位：${p.unit}`].filter(Boolean).join('；') || null,
@@ -1237,6 +1255,22 @@ function productToCloudPayload(p) {
 // ==========================================================================
 function printActiveOrders() {
     return state.orders.filter(o => o.groupBuyId === state.activeGroupBuyId && o.orderStatus !== '已取消');
+}
+
+// 雙價有效單價：自取→pickupPrice||price，外送→deliveryPrice||price；
+// 商品缺雙價或找不到商品時回退品項當時單價（it.price），保持向後相容。
+function effectiveUnitPrice(item, pickupType) {
+    const prod = state.products.find(p => p.id === item.productId);
+    if (prod) {
+        if (pickupType === '外送' && prod.deliveryPrice != null && prod.deliveryPrice !== '') return Number(prod.deliveryPrice);
+        if (pickupType === '自取' && prod.pickupPrice != null && prod.pickupPrice !== '') return Number(prod.pickupPrice);
+    }
+    return Number(item.price) || 0;
+}
+
+// 依有效單價重算整張訂單金額（自取／外送雙價）。
+function effectiveOrderTotal(order) {
+    return (order.items || []).reduce((sum, it) => sum + effectiveUnitPrice(it, order.pickupType) * (Number(it.quantity) || 0), 0);
 }
 
 function printGroupBuyTitle() {
@@ -1257,11 +1291,14 @@ function printPackingSlips() {
     if (!orders.length) return alert('目前團購沒有有效訂單可列印。');
     const title = printGroupBuyTitle();
     const pages = orders.map(o => {
-        const rows = (o.items || []).map(it => `<tr>
+        const rows = (o.items || []).map(it => {
+            const unitPrice = effectiveUnitPrice(it, o.pickupType);
+            return `<tr>
             <td>${escapeHtml(it.productName)}</td><td>${escapeHtml(it.specs || '')}</td>
             <td>${Number(it.quantity)} ${escapeHtml(it.unit || '')}</td>
-            <td>NT$ ${Number(it.price).toLocaleString()}</td>
-            <td>NT$ ${(Number(it.price) * Number(it.quantity)).toLocaleString()}</td></tr>`).join('');
+            <td>NT$ ${unitPrice.toLocaleString()}</td>
+            <td>NT$ ${(unitPrice * Number(it.quantity)).toLocaleString()}</td></tr>`;
+        }).join('');
         return `<div class="print-page">
             <h2>包貨單｜${escapeHtml(title)}</h2>
             <div class="print-meta">
@@ -1271,7 +1308,7 @@ function printPackingSlips() {
             </div>
             <table><thead><tr><th>商品名稱</th><th>規格</th><th>數量</th><th>單價</th><th>小計</th></tr></thead>
             <tbody>${rows}</tbody></table>
-            <p class="print-total">總金額：NT$ ${Number(o.totalAmount).toLocaleString()}（${escapeHtml(o.paymentStatus)}）</p>
+            <p class="print-total">總金額：NT$ ${effectiveOrderTotal(o).toLocaleString()}（${escapeHtml(o.paymentStatus)}）</p>
             ${o.notes ? `<p class="print-note">備註：${escapeHtml(o.notes)}</p>` : ''}
         </div>`;
     });
@@ -1311,7 +1348,7 @@ function printPickupList(type) {
         <td>${escapeHtml(o.customerId)}</td><td>${escapeHtml(o.customerNickname)}</td>
         <td>${escapeHtml(o.phone || '')}</td>
         <td>${type === '外送' ? escapeHtml(o.address || '') : escapeHtml((o.items || []).map(it => `${it.productName}×${it.quantity}`).join('、'))}</td>
-        <td>NT$ ${Number(o.totalAmount).toLocaleString()}</td>
+        <td>NT$ ${effectiveOrderTotal(o).toLocaleString()}</td>
         <td>${escapeHtml(o.paymentStatus)}${o.notes ? `／${escapeHtml(o.notes)}` : ''}</td></tr>`).join('');
     const head = `<tr><th>客戶編號</th><th>客戶暱稱</th><th>電話</th><th>${type === '外送' ? '地址' : '商品內容'}</th><th>金額</th><th>付款／備註</th></tr>`;
     runPrint(`<div class="print-page">
@@ -1355,7 +1392,7 @@ async function syncLineOrdersFromCloud() {
             customerId: o.customer_id,
             customerNickname: o.customer_nickname || (existing && existing.customerNickname) || o.customer_id,
             phone: customer.phone || (existing && existing.phone) || '',
-            address: (existing && existing.address) || customer.address || '',
+            address: (existing && existing.address) || o.address || customer.address || '',
             pickupType: (existing && existing.pickupType) || o.pickup_type || o.customer_pickup_type || '',
             items: activeItems,
             totalAmount: Number(o.total_amount) || 0,
@@ -2781,7 +2818,7 @@ function exportToExcel() {
             "取貨方式": o.pickupType,
             "商品種類": o.items.length,
             "商品總件數": totalItemsCount,
-            "訂單總額": o.totalAmount,
+            "訂單總額": effectiveOrderTotal(o),
             "付款狀態": o.paymentStatus,
             "訂單狀態": o.orderStatus
         };
@@ -2791,6 +2828,7 @@ function exportToExcel() {
     const dataSheet2 = [];
     list.forEach(o => {
         o.items.forEach(it => {
+            const unitPrice = effectiveUnitPrice(it, o.pickupType);
             dataSheet2.push({
                 "客戶編號": o.customerId,
                 "客戶暱稱": o.customerNickname,
@@ -2798,8 +2836,9 @@ function exportToExcel() {
                 "商品名稱": it.productName,
                 "規格": it.specs || "",
                 "數量": it.quantity,
-                "單價": it.price,
-                "小計": it.price * it.quantity
+                "取貨方式": o.pickupType || "",
+                "單價": unitPrice,
+                "小計": unitPrice * it.quantity
             });
         });
     });
@@ -2834,7 +2873,7 @@ function exportToExcel() {
         "連絡電話": o.phone,
         "配送地址": o.pickupType === "外送" ? o.address : "",
         "取貨方式": o.pickupType,
-        "訂單總額": o.totalAmount,
+        "訂單總額": effectiveOrderTotal(o),
         "備註說明": o.notes || ""
     }));
 

@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "typecheck": "node --check app.js && node --check product-voice.js && node --check line-order.js && node --check worker/src/line-flex.js && node --check worker/src/webhook-handler.js && node --check worker/src/index.js && node --check worker/src/entry.mjs",
+    "typecheck": "node --check app.js && node --check product-voice.js && node --check line-order.js && node --check liff-order.js && node --check worker/src/line-flex.js && node --check worker/src/webhook-handler.js && node --check worker/src/liff.js && node --check worker/src/index.js && node --check worker/src/entry.mjs",
     "lint": "eslint .",
     "test": "node --test *.test.js worker/src/*.test.js",
     "build": "node scripts/build.js"

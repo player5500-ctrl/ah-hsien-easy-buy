@@ -781,6 +781,16 @@
                     </div>
                     <div class="form-grid" style="margin-bottom: 16px;">
                         <div class="form-group">
+                            <label class="form-label" for="prod-pickup-price">自取價 (元，選填)</label>
+                            <input type="number" class="form-control" id="prod-pickup-price" min="0" placeholder="留空＝同售價">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="prod-delivery-price">外送價 (元，選填)</label>
+                            <input type="number" class="form-control" id="prod-delivery-price" min="0" placeholder="留空＝同售價">
+                        </div>
+                    </div>
+                    <div class="form-grid" style="margin-bottom: 16px;">
+                        <div class="form-group">
                             <label class="form-label required" for="prod-unit">單位</label>
                             <div class="voice-input-row"><input type="text" class="form-control" id="prod-unit" required placeholder="例如：包、盒、袋"><button type="button" class="voice-field-btn" data-voice-field="unit" onclick="startProductFieldVoice('unit')" aria-label="語音輸入單位" title="語音輸入單位"><i class="fa-solid fa-microphone"></i></button></div>
                         </div>

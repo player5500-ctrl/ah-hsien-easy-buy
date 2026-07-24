@@ -39,9 +39,37 @@ function deadlineLabel(value) {
     }).format(date);
 }
 
-function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1, 2, 3] }) {
+// LIFF 深連結：開啟客戶端下單頁。URI 內只放團購/商品/數量/動作，
+// 絕不放價格、userId 或 token（見 TASK 規範）。無 displayText，群組保持靜默。
+function liffOrderUri(liffId, { groupBuyId, productId, quantity, action } = {}) {
+    const qs = new URLSearchParams();
+    if (groupBuyId != null && groupBuyId !== "") qs.set("groupBuyId", String(groupBuyId));
+    if (productId != null && productId !== "") qs.set("productId", String(productId));
+    if (quantity != null && quantity !== "") qs.set("quantity", String(quantity));
+    if (action != null && action !== "") qs.set("action", String(action));
+    const query = qs.toString();
+    return `https://liff.line.me/${liffId}${query ? `?${query}` : ""}`;
+}
+
+function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1, 2, 3], liffId = null }) {
     const buttons = normalizeQuantities(quantities);
     if (!buttons.length) throw new Error("至少選擇一個數量按鈕");
+    // 有設定 LIFF_ID → 按鈕改開 LIFF 下單頁（URI action，靜默、可確認、可改量取消）。
+    // 缺 LIFF_ID → 回退既有 Postback 按鈕，維持設定前的行為不中斷。
+    const useLiff = typeof liffId === "string" && liffId.trim() !== "";
+    const gid = String(groupBuy.id);
+    const pid = String(product.id);
+
+    const quantityButtonsBox = {
+        type: "box", layout: "horizontal", spacing: "sm", margin: "xl",
+        contents: buttons.map(quantity => ({
+            type: "button", height: "sm", style: "primary", color: "#E86A33",
+            action: useLiff
+                ? { type: "uri", label: `${quantity}份`, uri: liffOrderUri(liffId, { groupBuyId: gid, productId: pid, quantity }) }
+                : { type: "postback", label: `${quantity}份`, data: createPostbackData("set_quantity", gid, pid, quantity) }
+        }))
+    };
+
     const bodyContents = [
         { type: "text", text: String(product.name), weight: "bold", size: "xl", wrap: true },
         { type: "text", text: String(product.specs || "無規格"), size: "sm", color: "#666666", wrap: true, margin: "sm" },
@@ -54,30 +82,33 @@ function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1
         { type: "separator", margin: "lg" },
         { type: "text", text: `團購：${groupBuy.name}`, size: "sm", wrap: true, margin: "lg" },
         { type: "text", text: `收單截止：${deadlineLabel(groupBuy.ends_at)}`, size: "sm", color: "#C0392B", wrap: true, margin: "sm" },
-        {
-            type: "box", layout: "horizontal", spacing: "sm", margin: "xl",
-            contents: buttons.map(quantity => ({
-                type: "button", height: "sm", style: "primary", color: "#E86A33",
-                action: {
-                    type: "postback",
-                    label: `${quantity}份`,
-                    data: createPostbackData("set_quantity", groupBuy.id, product.id, quantity)
-                }
-            }))
-        },
-        {
-            type: "button", height: "sm", style: "secondary", margin: "md",
-            action: {
-                type: "postback",
-                label: "取消訂購",
-                data: createPostbackData("cancel_item", groupBuy.id, product.id)
-            }
-        },
-        // 「查看我的訂單」已移除：靜默 Postback 對客戶沒有可見結果，
-        // 在提供客戶端訂單查詢頁前不保留沒有回饋的按鈕（2026-07-22 驗收決議，方案 B）。
-        // parsePostbackData 仍接受 view_order，讓已發布的舊卡片不會報錯。
-        { type: "text", text: "按鈕下單不會在聊天室產生訊息", size: "xs", color: "#888888", align: "center", wrap: true, margin: "md" }
+        quantityButtonsBox
     ];
+
+    if (useLiff) {
+        // 立即訂購（quantity=1）→ 開 LIFF 下單頁；查看／修改我的訂單、取消訂購 → LIFF myorder 頁確認。
+        bodyContents.push({
+            type: "button", height: "sm", style: "primary", color: "#E86A33", margin: "md",
+            action: { type: "uri", label: "立即訂購", uri: liffOrderUri(liffId, { groupBuyId: gid, productId: pid, quantity: 1 }) }
+        });
+        bodyContents.push({
+            type: "button", height: "sm", style: "secondary", margin: "md",
+            action: { type: "uri", label: "查看／修改我的訂單", uri: liffOrderUri(liffId, { groupBuyId: gid, action: "myorder" }) }
+        });
+        bodyContents.push({
+            type: "button", height: "sm", style: "secondary", margin: "md",
+            action: { type: "uri", label: "取消訂購", uri: liffOrderUri(liffId, { groupBuyId: gid, productId: pid, action: "myorder" }) }
+        });
+    } else {
+        // 回退：維持既有 Postback 取消訂購按鈕。「查看我的訂單」（view_order）仍不重建，
+        // 沿用 2026-07-22 決議；parsePostbackData 仍接受舊卡片的 view_order。
+        bodyContents.push({
+            type: "button", height: "sm", style: "secondary", margin: "md",
+            action: { type: "postback", label: "取消訂購", data: createPostbackData("cancel_item", gid, pid) }
+        });
+    }
+
+    bodyContents.push({ type: "text", text: "按鈕下單不會在聊天室產生訊息", size: "xs", color: "#888888", align: "center", wrap: true, margin: "md" });
     const bubble = { type: "bubble", body: { type: "box", layout: "vertical", contents: bodyContents } };
     if (showImage && /^https:\/\//i.test(product.image_url || "")) {
         bubble.hero = { type: "image", url: product.image_url, size: "full", aspectRatio: "20:13", aspectMode: "cover" };
@@ -89,4 +120,4 @@ function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1
     };
 }
 
-module.exports = { normalizeQuantities, createPostbackData, parsePostbackData, buildFlexMessage, deadlineLabel };
+module.exports = { normalizeQuantities, createPostbackData, parsePostbackData, buildFlexMessage, deadlineLabel, liffOrderUri };

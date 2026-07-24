@@ -20,3 +20,7 @@ bucket_name = "ah-hsien-easy-buy-images"
 # 非敏感環境設定可放在 [vars]；也可在 Cloudflare Dashboard 設定。
 [vars]
 LINE_DEFAULT_GROUP_ID = ""
+# LIFF 應用程式 ID（前端 liff.init 用；非機密，會由 /api/liff/config 公開回傳）。
+LIFF_ID = ""
+# LINE Login channel ID，用於驗證客戶端傳來的 id_token（aud/client_id 比對）。
+LINE_LOGIN_CHANNEL_ID = ""

@@ -52,7 +52,13 @@ test("商品欄位驗證：名稱必填、代碼正規化、價格為非負整�
     assert.equal(validateProductPayload({ name: "布丁", price: -5 }).error, "價格必須是 0 以上的整數");
     assert.equal(validateProductPayload({ name: "布丁", price: 1.5 }).error, "價格必須是 0 以上的整數");
     const ok = validateProductPayload({ name: " 布丁 ", line_code: "ａ００１", price: 60, enabled: false });
-    assert.deepEqual(ok, { name: "布丁", lineCode: "A001", price: 60, specs: null, unit: "份", description: null, imageUrl: null, enabled: 0 });
+    assert.deepEqual(ok, { name: "布丁", lineCode: "A001", price: 60, pickupPrice: null, deliveryPrice: null, specs: null, unit: "份", description: null, imageUrl: null, enabled: 0 });
+    // 雙價選填：缺值→null；有值須為非負整數；非法值回錯誤
+    const dual = validateProductPayload({ name: "布丁", price: 60, pickup_price: 55, delivery_price: 70 });
+    assert.equal(dual.pickupPrice, 55);
+    assert.equal(dual.deliveryPrice, 70);
+    assert.equal(validateProductPayload({ name: "布丁", price: 60, pickup_price: -1 }).error, "自取價必須是 0 以上的整數");
+    assert.equal(validateProductPayload({ name: "布丁", price: 60, delivery_price: 1.5 }).error, "外送價必須是 0 以上的整數");
 });
 
 function fakeDb() {

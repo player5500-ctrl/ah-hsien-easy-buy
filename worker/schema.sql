@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS customers (
   nickname TEXT NOT NULL,
   line_user_id TEXT UNIQUE,
   pickup_type TEXT,
+  address TEXT,
   profile_status TEXT NOT NULL DEFAULT 'complete',
   created_at TEXT,
   updated_at TEXT
@@ -16,6 +17,8 @@ CREATE TABLE IF NOT EXISTS products (
   enabled INTEGER NOT NULL DEFAULT 1,
   line_code TEXT UNIQUE,
   price INTEGER NOT NULL DEFAULT 0,
+  pickup_price INTEGER,
+  delivery_price INTEGER,
   specs TEXT,
   unit TEXT NOT NULL DEFAULT '份',
   description TEXT,

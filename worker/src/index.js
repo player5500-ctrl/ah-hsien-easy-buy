@@ -1,6 +1,7 @@
 const LineOrder = require("../../line-order.js");
 const { handleWebhook } = require("./webhook-handler.js");
 const LineFlex = require("./line-flex.js");
+const Liff = require("./liff.js");
 
 const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
 
@@ -109,10 +110,23 @@ function validateProductPayload(payload) {
     if (rawCode && !lineCode) return { error: "商品代碼格式錯誤，需以英文字母開頭，例如 A001" };
     const price = Number(payload.price ?? 0);
     if (!Number.isInteger(price) || price < 0) return { error: "價格必須是 0 以上的整數" };
+    // 雙價：自取價／外送價為選填，缺值存 null（下單時回退 legacy price，見 liff.js effectivePrice）。
+    const parseOptionalPrice = (value, label) => {
+        if (value == null || value === "") return { value: null };
+        const num = Number(value);
+        if (!Number.isInteger(num) || num < 0) return { error: `${label}必須是 0 以上的整數` };
+        return { value: num };
+    };
+    const pickup = parseOptionalPrice(payload.pickup_price, "自取價");
+    if (pickup.error) return { error: pickup.error };
+    const delivery = parseOptionalPrice(payload.delivery_price, "外送價");
+    if (delivery.error) return { error: delivery.error };
     return {
         name,
         lineCode,
         price,
+        pickupPrice: pickup.value,
+        deliveryPrice: delivery.value,
         specs: String(payload.specs || "").trim() || null,
         unit: String(payload.unit || "").trim() || "份",
         description: String(payload.description || "").trim() || null,
@@ -173,8 +187,8 @@ async function handleProductRoutes(request, env, url) {
         if (product.error) return json({ error: product.error }, 400);
         const id = crypto.randomUUID();
         try {
-            await env.DB.prepare("INSERT INTO products (id, name, enabled, line_code, price, specs, unit, description, image_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)")
-                .bind(id, product.name, product.enabled, product.lineCode, product.price, product.specs, product.unit, product.description, product.imageUrl).run();
+            await env.DB.prepare("INSERT INTO products (id, name, enabled, line_code, price, pickup_price, delivery_price, specs, unit, description, image_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)")
+                .bind(id, product.name, product.enabled, product.lineCode, product.price, product.pickupPrice, product.deliveryPrice, product.specs, product.unit, product.description, product.imageUrl).run();
         } catch (error) {
             if (isUniqueViolation(error)) return json({ error: `商品代碼 ${product.lineCode} 已存在` }, 409);
             throw error;
@@ -193,16 +207,16 @@ async function handleProductRoutes(request, env, url) {
         if (product.error) return json({ error: product.error }, 400);
         let result;
         try {
-            result = await env.DB.prepare("UPDATE products SET name = ?, enabled = ?, line_code = ?, price = ?, specs = ?, unit = ?, description = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-                .bind(product.name, product.enabled, product.lineCode, product.price, product.specs, product.unit, product.description, product.imageUrl, id).run();
+            result = await env.DB.prepare("UPDATE products SET name = ?, enabled = ?, line_code = ?, price = ?, pickup_price = ?, delivery_price = ?, specs = ?, unit = ?, description = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                .bind(product.name, product.enabled, product.lineCode, product.price, product.pickupPrice, product.deliveryPrice, product.specs, product.unit, product.description, product.imageUrl, id).run();
         } catch (error) {
             if (isUniqueViolation(error)) return json({ error: `商品代碼 ${product.lineCode} 已存在` }, 409);
             throw error;
         }
         if (!result.meta.changes) {
             try {
-                await env.DB.prepare("INSERT INTO products (id, name, enabled, line_code, price, specs, unit, description, image_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)")
-                    .bind(id, product.name, product.enabled, product.lineCode, product.price, product.specs, product.unit, product.description, product.imageUrl).run();
+                await env.DB.prepare("INSERT INTO products (id, name, enabled, line_code, price, pickup_price, delivery_price, specs, unit, description, image_url, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)")
+                    .bind(id, product.name, product.enabled, product.lineCode, product.price, product.pickupPrice, product.deliveryPrice, product.specs, product.unit, product.description, product.imageUrl).run();
             } catch (error) {
                 if (isUniqueViolation(error)) return json({ error: `商品代碼 ${product.lineCode} 已存在` }, 409);
                 throw error;
@@ -420,7 +434,8 @@ async function getFlexContext(env, payload) {
         groupBuy: { id: row.group_buy_id, name: row.group_buy_name, ends_at: row.ends_at },
         product: { id: row.product_id, name: row.product_name, specs: row.specs, unit: row.unit, price: row.price, image_url: row.image_url },
         showImage: payload.show_image !== false,
-        quantities: payload.quantities
+        quantities: payload.quantities,
+        liffId: env.LIFF_ID || null
     });
     return { groupId, row, flex };
 }
@@ -595,7 +610,12 @@ async function routeRequest(request, env, context) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/webhook/line") return handleWebhook(request, env, context, createDependencies(env));
     if (request.method === "GET" && url.pathname.startsWith("/images/")) return serveImage(env, url);
-    if (url.pathname.startsWith("/api/") && !isAdmin(request, env)) return json({ error: "未授權" }, 401);
+    // LIFF 客戶端路由：以 LINE id_token 驗證，繞過管理金鑰（放在管理閘門之前）。
+    if (url.pathname.startsWith("/api/liff/")) {
+        const handled = await Liff.handleLiffRoutes(request, env, url);
+        return handled || json({ error: "Not found" }, 404);
+    }
+    if (url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/liff/") && !isAdmin(request, env)) return json({ error: "未授權" }, 401);
     if (url.pathname.startsWith("/api/products")) {
         const handled = await handleProductRoutes(request, env, url);
         if (handled) return handled;
@@ -637,7 +657,7 @@ async function routeRequest(request, env, context) {
         if (!groupBuyId) return json({ error: "缺少 group_buy_id" }, 400);
         const ordersResult = await env.DB.prepare(`SELECT o.id, o.customer_id, o.group_buy_id, o.pickup_type, o.status,
                 o.total_amount, o.created_at, o.updated_at,
-                c.nickname AS customer_nickname, c.pickup_type AS customer_pickup_type
+                c.nickname AS customer_nickname, c.pickup_type AS customer_pickup_type, c.address
             FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
             WHERE o.group_buy_id = ? ORDER BY o.created_at LIMIT 1000`).bind(groupBuyId).all();
         const itemsResult = await env.DB.prepare(`SELECT i.order_id, i.product_id, i.product_code, i.quantity,

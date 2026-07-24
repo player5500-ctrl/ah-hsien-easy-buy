@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
+    <meta name="format-detection" content="telephone=no">
+    <title>阿賢 Easy 購｜線上下單</title>
+    <link rel="stylesheet" href="liff-order.css">
+    <!-- LINE LIFF SDK -->
+    <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+</head>
+<body>
+    <div class="wrap">
+        <!-- 載入中 -->
+        <div id="view-loading" class="card">
+            <div class="loading"><div class="spinner"></div><div id="loading-text">正在開啟訂購頁…</div></div>
+        </div>
+
+        <!-- 錯誤 -->
+        <div id="view-error" class="card hidden">
+            <div class="notice notice-danger" id="error-message">發生錯誤，請稍後再試。</div>
+            <button id="error-retry" class="btn btn-primary hidden">重新登入</button>
+            <button id="error-close" class="btn btn-secondary">關閉並返回 LINE</button>
+        </div>
+
+        <!-- 訂購主畫面 -->
+        <div id="view-main" class="hidden">
+            <!-- 商品卡 + 下單（有 productId 時顯示） -->
+            <div id="order-panel" class="card hidden">
+                <img id="product-image" class="product-image hidden" alt="">
+                <h1 id="product-name" class="product-name"></h1>
+                <p id="product-specs" class="product-specs"></p>
+                <div class="price-row">
+                    <span id="product-price" class="price-main"></span>
+                    <span id="product-unit" class="price-unit"></span>
+                </div>
+                <p id="price-hint" class="price-hint"></p>
+
+                <div class="section-title">取貨方式</div>
+                <div class="pickup-selector">
+                    <button type="button" class="pickup-btn active" data-pickup="自取">自取</button>
+                    <button type="button" class="pickup-btn" data-pickup="外送">外送</button>
+                </div>
+                <div id="address-field" class="address-field hidden">
+                    <div class="section-title">配送地址</div>
+                    <input id="address-input" class="address-input" type="text" inputmode="text"
+                        maxlength="200" autocomplete="street-address"
+                        placeholder="例如 台北市信義區信義路五段7號">
+                    <div id="address-hint" class="notice notice-warn hidden">外送地址尚未設定</div>
+                </div>
+
+                <div class="section-title">數量</div>
+                <div class="qty-row">
+                    <button type="button" id="qty-minus" class="qty-btn" aria-label="減少數量">−</button>
+                    <span id="qty-value" class="qty-value">1</span>
+                    <button type="button" id="qty-plus" class="qty-btn" aria-label="增加數量">+</button>
+                </div>
+
+                <div class="subtotal-row">
+                    <span>本次金額</span>
+                    <span id="subtotal" class="subtotal-amount">NT$ 0</span>
+                </div>
+
+                <button type="button" id="confirm-btn" class="btn btn-primary">確認訂購</button>
+                <button type="button" id="cancel-btn" class="btn btn-secondary">取消</button>
+            </div>
+
+            <!-- 我的目前訂單 -->
+            <div id="myorder-panel" class="card">
+                <div class="section-title">我的目前訂單</div>
+                <div id="myorder-list"></div>
+            </div>
+
+            <!-- 即時訂購統計（僅在有 productId 時顯示） -->
+            <div id="stats-panel" class="card hidden">
+                <div class="section-title">本商品即時訂購統計</div>
+                <div id="stats-body"></div>
+            </div>
+
+            <button type="button" id="close-btn" class="btn btn-secondary">關閉並返回 LINE</button>
+        </div>
+
+        <!-- 訂購成功 -->
+        <div id="view-success" class="card hidden">
+            <div class="success-check">✅</div>
+            <div class="success-title">訂購成功</div>
+            <div class="success-row"><span class="success-label">商品</span><span id="success-product" class="success-value"></span></div>
+            <div class="success-row"><span class="success-label">目前數量</span><span id="success-qty" class="success-value"></span></div>
+            <div class="success-row"><span class="success-label">取貨方式</span><span id="success-pickup" class="success-value"></span></div>
+            <div class="success-row hidden" id="success-address-row"><span class="success-label">配送地址</span><span id="success-address" class="success-value"></span></div>
+            <div class="success-row"><span class="success-label">本次金額</span><span id="success-amount" class="success-value"></span></div>
+            <button type="button" id="success-edit" class="btn btn-primary">修改數量</button>
+            <button type="button" id="success-cancel-item" class="btn btn-danger">取消此商品</button>
+            <button type="button" id="success-view-all" class="btn btn-secondary">查看我的全部訂單</button>
+            <button type="button" id="success-close" class="btn btn-secondary">關閉並返回 LINE</button>
+        </div>
+    </div>
+
+    <script src="liff-order.js"></script>
+</body>
+</html>

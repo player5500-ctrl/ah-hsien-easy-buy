@@ -13,6 +13,7 @@
     // ── 記憶體狀態（不落地）───────────────────────────────
     var idToken = null;            // 只存記憶體
     var liffId = null;
+    var lastErrorIsAuth = false;   // 錯誤畫面重試鈕的行為依據
     var state = {
         groupBuyId: "",
         productId: "",
@@ -59,12 +60,48 @@
     }
 
     // ── URL 參數（白名單）───────────────────────────────
-    function readParams() {
-        var p = new URLSearchParams(window.location.search);
-        state.groupBuyId = String(p.get("groupBuyId") || "").trim();
-        state.productId = String(p.get("productId") || "").trim();
-        state.action = String(p.get("action") || "").trim();
-        var q = parseInt(p.get("quantity"), 10);
+    // 只解析 groupBuyId / productId / quantity / action，永不讀取 userId / token / 客戶資料。
+    function parseQuery(search) {
+        var p = new URLSearchParams(search || "");
+        return {
+            groupBuyId: String(p.get("groupBuyId") || "").trim(),
+            productId: String(p.get("productId") || "").trim(),
+            action: String(p.get("action") || "").trim(),
+            quantity: p.get("quantity")
+        };
+    }
+
+    // LINE 在外部瀏覽器 / 桌機 / 登入導向時，會把原始 query 包進 liff.state 參數，
+    // 其值可能是「?groupBuyId=..&productId=..」或「/path?groupBuyId=..」形式。
+    // 取出其中的 query 部分（URLSearchParams 已解碼一次；必要時再解一次仍失敗則保留原字串）。
+    function queryFromLiffState(search) {
+        var raw = new URLSearchParams(search || "").get("liff.state");
+        if (!raw) return "";
+        // 若仍是編碼字串（含 %3F / %3D 之類），再解一次
+        if (/%(3[fdF]|26)/.test(raw)) {
+            try { raw = decodeURIComponent(raw); } catch (e) { /* 保留原字串 */ }
+        }
+        var qi = raw.indexOf("?");
+        return qi >= 0 ? raw.slice(qi + 1) : raw;
+    }
+
+    // 依序嘗試多個來源：直接 URL → liff.state；取第一個帶得出 groupBuyId 的來源整組採用。
+    function resolveParams() {
+        var candidates = [window.location.search];
+        var stateQ = queryFromLiffState(window.location.search);
+        if (stateQ) candidates.push(stateQ);
+
+        var picked = null;
+        for (var i = 0; i < candidates.length; i++) {
+            var parsed = parseQuery(candidates[i]);
+            if (parsed.groupBuyId) { picked = parsed; break; }
+        }
+        if (!picked) picked = parseQuery(window.location.search);
+
+        state.groupBuyId = picked.groupBuyId;
+        state.productId = picked.productId;
+        state.action = picked.action;
+        var q = parseInt(picked.quantity, 10);
         state.quantity = (Number.isInteger(q) && q >= 1 && q <= 99) ? q : 1;
     }
 
@@ -105,13 +142,9 @@
 
     // ── 啟動流程 ───────────────────────────────
     function boot() {
-        readParams();
         text("loading-text", "正在開啟訂購頁…");
         showOnly("view-loading");
 
-        if (!state.groupBuyId) {
-            return fail(ALLOWED_ERRORS.notFound, false);
-        }
         // 1) 取得 LIFF ID（不 hardcode）
         apiRequest("/api/liff/config", {}, ALLOWED_ERRORS.login)
             .then(function (cfg) {
@@ -121,10 +154,15 @@
             })
             .catch(function (e) { throw normalizeLiffError(e, ALLOWED_ERRORS.login); })
             .then(function () {
+                // 先 liff.init，再解析參數：外部瀏覽器 / 桌機 / 登入導向會把原始 query 包進
+                // liff.state，且 init 完成後 window.location 可能才還原原始 URL。
+                resolveParams();
                 if (!liff.isLoggedIn()) {
                     liff.login({ redirectUri: window.location.href });
                     return new Promise(function () { /* 導向登入，永不 resolve */ });
                 }
+                // 集齊所有來源（直接 URL + liff.state）且 init 後仍沒有 groupBuyId 才判定找不到
+                if (!state.groupBuyId) throw new AppError(ALLOWED_ERRORS.notFound);
                 idToken = liff.getIDToken();
                 if (!idToken) throw new AppError(ALLOWED_ERRORS.auth, { isAuth: true });
                 // 2) 以 Worker 驗證 id_token
@@ -219,6 +257,16 @@
         if (!Number.isInteger(q) || q < 1) return 1;
         if (q > 99) return 99;
         return q;
+    }
+
+    // 取消品項 / 整張訂單後，回到主訂購畫面並讓「確認訂購」可再次使用。
+    // 解鎖 submitting、重算數量（目前商品仍在訂單→沿用其數量，否則回預設 1 可立即再加入），
+    // 再重繪主畫面（含商品卡、我的訂單、統計），避免卡在成功 / 空白畫面。
+    function resyncAfterCancel() {
+        state.submitting = false;
+        var mine = state.productId ? findMyItem(state.productId) : null;
+        state.quantity = mine ? clampQty(mine.quantity) : 1;
+        render();
     }
 
     // ── 畫面渲染 ───────────────────────────────
@@ -362,7 +410,9 @@
         $("cancel-btn").addEventListener("click", function () { closeWindow(); });
         $("close-btn").addEventListener("click", function () { closeWindow(); });
 
-        $("error-retry").addEventListener("click", function () { relogin(); });
+        $("error-retry").addEventListener("click", function () {
+            if (lastErrorIsAuth) relogin(); else window.location.reload();
+        });
         $("error-close").addEventListener("click", function () { closeWindow(); });
 
         $("success-edit").addEventListener("click", function () { render(); scrollTop(); });
@@ -432,9 +482,8 @@
         .then(function (data) {
             state.order = (data && data.order) || state.order;
             state.stats = (data && data.stats) || state.stats;
-            state.submitting = false;
-            if (fromSuccess) { render(); scrollTop(); }
-            else { render(); }
+            resyncAfterCancel();               // 解鎖 + 重算數量 + 回主畫面，確認鈕可再次使用
+            if (fromSuccess) scrollTop();
         })
         .catch(function (e) { state.submitting = false; failFromError(e, true); });
     }
@@ -449,8 +498,7 @@
         .then(function (data) {
             state.order = (data && data.order) || { items: [], pickupType: null, totalAmount: 0 };
             state.stats = (data && data.stats) || state.stats;
-            state.submitting = false;
-            render();
+            resyncAfterCancel();               // 解鎖 + 重算數量 + 回主畫面，確認鈕可再次使用
         })
         .catch(function (e) { state.submitting = false; failFromError(e, true); });
     }
@@ -491,8 +539,11 @@
     }
 
     function fail(message, isAuth) {
+        lastErrorIsAuth = !!isAuth;
         text("error-message", message);
-        if (isAuth) show("error-retry"); else hide("error-retry");
+        // 任何錯誤都提供重試：驗證錯誤→重新登入；其餘（網路 / 找不到等）→重新整理重跑 init。
+        text("error-retry", isAuth ? "重新登入" : "重新整理");
+        show("error-retry");
         showOnly("view-error");
     }
 

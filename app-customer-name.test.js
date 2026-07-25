@@ -197,12 +197,24 @@ test("回歸 B3：雲端沒有自訂名稱時不得把本機剛改好的名稱�
     assert.equal(saved[0].notes, "常客", "本機備註不得遺失");
 });
 
-test("回歸：雲端同步不得把沒有訂單的 LINE 暫存客戶灌進客戶管理", async () => {
+test("客戶管理必須看得到雲端客戶（含 LINE 自動建立的），否則團主無法設定名稱", async () => {
     const app = loadApp({
-        respond: () => ([{ id: "LINE-zzz", custom_display_name: null, line_display_name: "路人", line_user_id: "U9", profile_status: "pending" }])
+        respond: () => ([
+            { id: "LINE-zzz", custom_display_name: null, line_display_name: "蜜茶", line_user_id: "U9", address: null, pickup_type: null, profile_status: "pending" },
+            { id: "A001", custom_display_name: "陳小明", line_display_name: null, line_user_id: null, address: "台北市", pickup_type: "外送", profile_status: "complete" }
+        ])
     });
     app.localStorage.setItem("easygo_line_admin_api_key", "secret");
     app.setCustomers([]);
     await app.syncCustomersFromCloud();
-    assert.equal(JSON.parse(app.localStorage.getItem("easygo_customers") || "[]").length, 0);
+    const saved = JSON.parse(app.localStorage.getItem("easygo_customers") || "[]");
+    assert.equal(saved.length, 2, "本機沒有的雲端客戶要建出來");
+    const micha = saved.find(c => c.id === "LINE-zzz");
+    assert.equal(app.customerDisplayName(micha), "蜜茶");
+    assert.equal(micha.phone, "", "renderCustomers 會讀 phone.includes()，不可為 undefined");
+    assert.equal(typeof micha.address, "string");
+    assert.equal(micha.notes, "LINE 自動建立，請補齊電話與地址");
+    const ming = saved.find(c => c.id === "A001");
+    assert.equal(app.customerDisplayName(ming), "陳小明");
+    assert.equal(ming.address, "台北市");
 });

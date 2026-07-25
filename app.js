@@ -402,6 +402,10 @@ function switchView(viewId, subviewAction = '') {
         });
     } else if (viewId === 'customers') {
         renderCustomers();
+        // 背景把雲端客戶（含 LINE 自動建立、團主自訂名稱）同步回本機後重新渲染
+        syncCustomersFromCloud().then(result => {
+            if (result && result.data && result.data.synced && currentViewId === 'customers') renderCustomers();
+        });
     } else if (viewId === 'products') {
         renderProducts();
     } else if (viewId === 'excel') {
@@ -1400,10 +1404,9 @@ async function syncCustomersFromCloud() {
     rows.forEach(row => {
         if (!row || !row.id) return;
         const idx = state.customers.findIndex(c => c.id === row.id);
-        // 只補齊本機已有的客戶。沒有訂單的雲端暫存客戶不要灌進客戶管理／下拉選單；
-        // 有訂單的客戶會由 syncLineOrdersFromCloud 自動建立本機列。
-        if (idx === -1) return;
-        const local = state.customers[idx];
+        // 雲端 D1 是客戶名冊的真實來源：本機沒有的客戶要建出來，
+        // 否則團主在客戶管理看不到 LINE 自動建立的客戶，就無法替他設定名稱。
+        const local = idx > -1 ? state.customers[idx] : { phone: '', address: '', notes: '' };
         const merged = {
             ...local,
             id: row.id,
@@ -1413,12 +1416,13 @@ async function syncCustomersFromCloud() {
             lineDisplayName: row.line_display_name || local.lineDisplayName || '',
             lineUserId: row.line_user_id || local.lineUserId || '',
             // 電話與備註只存在本機，雲端沒有這兩個欄位，保留本機值
-            phone: local.phone || '',
             address: local.address || row.address || '',
-            pickupType: local.pickupType || row.pickup_type || ''
+            pickupType: local.pickupType || row.pickup_type || '',
+            phone: local.phone || '',
+            notes: local.notes || (row.profile_status === 'pending' ? 'LINE 自動建立，請補齊電話與地址' : '')
         };
         merged.nickname = CustomerName.mirrorNickname(merged, row.id);
-        state.customers[idx] = merged;
+        if (idx > -1) state.customers[idx] = merged; else state.customers.push(merged);
         changed += 1;
     });
     if (changed) saveStateToStorage();

@@ -1,8 +1,13 @@
 PRAGMA foreign_keys = ON;
 
+-- nickname 為 legacy 欄位，由程式維護為「目前應顯示的名稱」鏡射值（見 customer-name.js mirrorNickname）。
+-- 實際名稱來源：custom_display_name（團主自訂，LINE 事件不得覆蓋）> line_display_name（LINE 原始名稱）。
+-- 客戶編號沿用 id（例：A001／024），不另設 customer_code 欄位。
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,
   nickname TEXT NOT NULL,
+  line_display_name TEXT,
+  custom_display_name TEXT,
   line_user_id TEXT UNIQUE,
   pickup_type TEXT,
   address TEXT,
@@ -52,6 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_line_inbox_status_time ON line_order_inbox(status
 CREATE INDEX IF NOT EXISTS idx_line_inbox_duplicate ON line_order_inbox(group_id, line_user_id, normalized_message, message_time);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_line_inbox_webhook_event ON line_order_inbox(webhook_event_id) WHERE webhook_event_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_line_user_id ON customers(line_user_id) WHERE line_user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_customers_custom_display_name ON customers(custom_display_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_line_code ON products(line_code) WHERE line_code IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS orders (

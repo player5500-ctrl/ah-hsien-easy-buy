@@ -5,6 +5,8 @@
 //   - 訂單語意（去重、建暫存客戶、SET 而非累加、取消刪列、重算總額/狀態、寫變更紀錄）
 //     完全對齊 index.js 的 processPostback，讓 LIFF 與商品卡共用同一張訂單。
 
+const CustomerName = require("../../customer-name.js");
+
 const PICKUP_TYPES = new Set(["自取", "外送"]);
 
 class LiffAuthError extends Error {
@@ -112,7 +114,9 @@ function hasNonEmptyAddress(value) {
 }
 
 async function resolveCustomer(env, sub) {
-    const existingCustomer = await env.DB.prepare("SELECT id, nickname, address FROM customers WHERE line_user_id = ? LIMIT 1").bind(sub).first();
+    // 只用 id_token 驗證後的 sub（= LINE userId）查客戶，永不用名稱識別。
+    const existingCustomer = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, address
+        FROM customers WHERE line_user_id = ? LIMIT 1`).bind(sub).first();
     const customerId = existingCustomer?.id || await stableId("LINE", sub);
     const address = normalizeAddress(existingCustomer?.address);
     return { existingCustomer, customerId, address, hasAddress: hasNonEmptyAddress(address) };
@@ -133,12 +137,10 @@ function inboxUpsertStatement(env, orderId, sub, customerName, customerId, picku
         .bind(`liff:${orderId}`, sub, customerName, customerId, pickupType || null, orderId);
 }
 
-function customerUpsertStatement(env, customerId, customerName, sub) {
-    return env.DB.prepare(`INSERT INTO customers (id, nickname, line_user_id, pickup_type, profile_status, created_at, updated_at)
-        VALUES (?, ?, ?, NULL, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ON CONFLICT(line_user_id) DO UPDATE SET nickname = CASE
-            WHEN customers.profile_status = 'pending' AND excluded.nickname <> '' THEN excluded.nickname ELSE customers.nickname END,
-        updated_at = CURRENT_TIMESTAMP`).bind(customerId, customerName, sub);
+// LINE 原始名稱只寫進 line_display_name；團主自訂名稱（custom_display_name）永不被 LIFF 覆蓋。
+function customerUpsertStatement(env, customerId, lineDisplayName, sub) {
+    const name = String(lineDisplayName || "").trim();
+    return env.DB.prepare(CustomerName.CUSTOMER_UPSERT_SQL).bind(customerId, name || "LINE 客戶", name || null, sub);
 }
 
 function recomputeStatement(env, orderId, pickupType) {
@@ -264,7 +266,7 @@ async function setQuantity(request, env) {
     if (context.group_buy_status !== "open" || Date.now() > new Date(context.ends_at).getTime()) throw new LiffHttpError(409, "此團購已截止");
     if (!context.product_enabled) throw new LiffHttpError(409, "商品已停售");
 
-    const { customerId, address: storedAddress } = await resolveCustomer(env, sub);
+    const { customerId, address: storedAddress, existingCustomer: existingCustomerRow } = await resolveCustomer(env, sub);
 
     // 選填配送地址：字串、去空白、上限 200 字。providedAddress 為 trim 後的字串（可能為 ""）或 null（未帶）。
     let providedAddress = null;
@@ -282,7 +284,13 @@ async function setQuantity(request, env) {
         if (!effectiveAddress) throw new LiffHttpError(409, "外送地址尚未設定");
     }
 
-    const customerName = String(name || "LINE 客戶").slice(0, 100) || "LINE 客戶";
+    const lineDisplayName = String(name || "").slice(0, 100).trim();
+    // 收件匣的 display_name 記 LINE 原始名稱；後台顯示一律走 customers 的解析後名稱。
+    const customerName = CustomerName.resolveDisplayName({
+        custom_display_name: existingCustomerRow?.custom_display_name,
+        line_display_name: lineDisplayName || existingCustomerRow?.line_display_name,
+        nickname: existingCustomerRow?.nickname
+    }, "LINE 客戶");
     const existingOrder = await env.DB.prepare("SELECT id FROM orders WHERE customer_id = ? AND group_buy_id = ? LIMIT 1")
         .bind(customerId, groupBuyId).first();
     const orderId = existingOrder?.id || await stableId("ORD", `${customerId}:${groupBuyId}`);
@@ -294,10 +302,10 @@ async function setQuantity(request, env) {
     const productCode = context.line_code || context.product_id;
 
     const statements = [
-        customerUpsertStatement(env, customerId, customerName, sub),
+        customerUpsertStatement(env, customerId, lineDisplayName, sub),
         // 客戶列 upsert 後、若本次帶入非空地址就更新，維持與訂單同一原子批次。
         ...(willPersistAddress ? [addressUpdateStatement(env, customerId, providedAddress)] : []),
-        inboxUpsertStatement(env, orderId, sub, customerName, customerId, pickupType),
+        inboxUpsertStatement(env, orderId, sub, lineDisplayName || customerName, customerId, pickupType),
         env.DB.prepare(`INSERT OR IGNORE INTO orders
             (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
             VALUES (?, ?, ?, ?, '新訂單', ?, NULL, 0, CURRENT_TIMESTAMP)`)

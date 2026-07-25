@@ -880,14 +880,15 @@
                             </div>
                         </div>
                         <div class="form-group">
-                            <label class="form-label required" for="cust-nickname">客戶暱稱</label>
-                            <input type="text" class="form-control" id="cust-nickname" required placeholder="請輸入客戶暱稱...">
+                            <label class="form-label" for="cust-nickname">客戶暱稱（團主自訂名稱）</label>
+                            <input type="text" class="form-control" id="cust-nickname" placeholder="例如：024-蜜茶">
+                            <small id="cust-line-name-hint" style="display:none; font-size:12px; color:var(--text-muted);"></small>
                         </div>
                     </div>
                     <div class="form-grid" style="margin-bottom: 16px;">
                         <div class="form-group">
-                            <label class="form-label required" for="cust-phone">連絡電話</label>
-                            <input type="text" class="form-control" id="cust-phone" required placeholder="例如：0912-345-678" oninput="checkDuplicateCustomerWarning()">
+                            <label class="form-label" for="cust-phone">連絡電話</label>
+                            <input type="text" class="form-control" id="cust-phone" placeholder="例如：0912-345-678" oninput="checkDuplicateCustomerWarning()">
                         </div>
                         <div class="form-group">
                             <label class="form-label" for="cust-address">配送地址 (自取可免填)</label>
@@ -1160,6 +1161,7 @@
     <!-- 載入核心 JS 檔案 -->
     <script src="product-voice.js"></script>
     <script src="line-order.js"></script>
+    <script src="customer-name.js"></script>
     <script src="line-note.js"></script>
     <script src="app.js"></script>
 </body>

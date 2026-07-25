@@ -2,6 +2,7 @@ const LineOrder = require("../../line-order.js");
 const { handleWebhook } = require("./webhook-handler.js");
 const LineFlex = require("./line-flex.js");
 const Liff = require("./liff.js");
+const CustomerName = require("../../customer-name.js");
 
 const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
 
@@ -50,9 +51,24 @@ function createDependencies(env) {
             const result = await env.DB.prepare("SELECT line_code FROM products WHERE enabled = 1 AND line_code IS NOT NULL").all();
             return result.results.map(row => row.line_code);
         },
+        // 客戶識別一律以 line_user_id（event.source.userId）為準；LINE 顯示名稱會變、會重複，不可當識別碼。
+        // 僅在「該 LINE 帳號還沒綁定過」時，才用名稱做一次性輔助配對，且必須唯一命中、
+        // 且該客戶尚未綁定其他 LINE 帳號，命中後也只用於後台配對建議，不會寫回任何名稱。
         async findCustomer(userId, displayName) {
-            return env.DB.prepare("SELECT id, nickname, pickup_type AS pickupType FROM customers WHERE line_user_id = ? OR (line_user_id IS NULL AND nickname = ?) LIMIT 1")
-                .bind(userId, displayName).first();
+            const byLineUserId = userId
+                ? await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, pickup_type AS pickupType
+                    FROM customers WHERE line_user_id = ? LIMIT 1`).bind(userId).first()
+                : null;
+            if (byLineUserId) return { ...byLineUserId, displayName: CustomerName.resolveDisplayName(byLineUserId) };
+            const name = String(displayName || "").trim();
+            if (!name) return null;
+            const candidates = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, pickup_type AS pickupType
+                FROM customers WHERE line_user_id IS NULL
+                AND (TRIM(COALESCE(custom_display_name, '')) = ? OR TRIM(COALESCE(nickname, '')) = ?) LIMIT 2`)
+                .bind(name, name).all();
+            if (candidates.results.length !== 1) return null;
+            const only = candidates.results[0];
+            return { ...only, displayName: CustomerName.resolveDisplayName(only) };
         },
         async rememberLineGroup(conversationType, groupId) {
             if (!groupId) return;
@@ -240,6 +256,89 @@ async function handleProductRoutes(request, env, url) {
     return null;
 }
 
+// ==========================================================================
+// 客戶管理 API（後台）
+// 團主在「客戶管理」修改的名稱必須存到雲端，否則只留在瀏覽器 localStorage，
+// 下次同步就會被 D1 的 LINE 原始名稱蓋回去（這是「訂單仍顯示蜜茶」的直接原因之一）。
+// 這裡只寫 custom_display_name / pickup_type / address，
+// 永不寫 line_user_id 與 line_display_name（識別碼與 LINE 原始名稱由 Webhook 維護）。
+// ==========================================================================
+function customerSelectSql() {
+    return `SELECT id, nickname, line_display_name, custom_display_name, line_user_id, pickup_type, address,
+        profile_status, created_at, updated_at, ${CustomerName.resolvedNameSql()} AS customer_display_name
+        FROM customers`;
+}
+
+function validateCustomerPayload(payload) {
+    if (!payload || typeof payload !== "object") return { error: "JSON 格式錯誤" };
+    // 團主自訂名稱可留空：帶了但是空字串＝「取消自訂」，顯示時回退 LINE 原始名稱；
+    // 完全沒帶這個欄位＝「這次不動名稱」（部分更新），兩者語意必須分開，
+    // 否則只更新取貨方式的請求會把名稱清掉。
+    const nameProvided = payload.custom_display_name !== undefined || payload.nickname !== undefined;
+    const rawName = payload.custom_display_name !== undefined ? payload.custom_display_name : payload.nickname;
+    const customName = rawName === null || rawName === undefined ? "" : String(rawName).trim();
+    if (customName.length > 100) return { error: "客戶名稱請縮短至 100 字以內" };
+    const pickupType = String(payload.pickup_type || "").trim();
+    if (pickupType && !new Set(["自取", "外送"]).has(pickupType)) return { error: "取貨方式只接受『自取』或『外送』" };
+    // 地址空字串視為「未提供」而不是「清空」：地址是客人在 LIFF 自己填的資料，
+    // 團主在客戶管理存檔時不可把它清掉（COALESCE('', x) 會等於 ''，所以一定要轉 null）。
+    const rawAddress = payload.address === undefined || payload.address === null ? "" : String(payload.address).trim().slice(0, 200);
+    return { customName: customName || null, nameProvided, pickupType: pickupType || null, address: rawAddress || null };
+}
+
+async function handleCustomerRoutes(request, env, url) {
+    if (request.method === "GET" && url.pathname === "/api/customers") {
+        const rows = await env.DB.prepare(`${customerSelectSql()} ORDER BY id LIMIT 2000`).all();
+        return json(rows.results);
+    }
+    const idMatch = url.pathname.match(/^\/api\/customers\/([^/]+)$/);
+    if (!idMatch) return null;
+    const id = decodeURIComponent(idMatch[1]).trim();
+    if (!id) return json({ error: "缺少客戶編號" }, 400);
+
+    if (request.method === "GET") {
+        const row = await env.DB.prepare(`${customerSelectSql()} WHERE id = ? LIMIT 1`).bind(id).first();
+        return row ? json(row) : json({ error: "找不到客戶" }, 404);
+    }
+
+    if (request.method === "PUT") {
+        const payload = await readJson(request);
+        const customer = validateCustomerPayload(payload);
+        if (customer.error) return json({ error: customer.error }, 400);
+        const nameFlag = customer.nameProvided ? 1 : 0;
+        await env.DB.prepare(`INSERT INTO customers
+            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                custom_display_name = CASE WHEN ? = 1 THEN excluded.custom_display_name ELSE customers.custom_display_name END,
+                nickname = COALESCE(
+                    NULLIF(TRIM(COALESCE(CASE WHEN ? = 1 THEN excluded.custom_display_name ELSE customers.custom_display_name END, '')), ''),
+                    NULLIF(TRIM(COALESCE(customers.line_display_name, '')), ''),
+                    NULLIF(TRIM(COALESCE(customers.nickname, '')), ''),
+                    excluded.nickname),
+                pickup_type = COALESCE(excluded.pickup_type, customers.pickup_type),
+                address = COALESCE(excluded.address, customers.address),
+                -- LINE 自動建立的暫存客戶（LINE-xxxx + pending）要保留 pending，
+                -- 否則之後在收件匣「綁定客戶」會被判成重複綁定而永久卡在 409。
+                profile_status = CASE WHEN customers.profile_status = 'pending' AND customers.id LIKE 'LINE-%'
+                    THEN customers.profile_status ELSE 'complete' END,
+                updated_at = CURRENT_TIMESTAMP`)
+            .bind(id, customer.customName || id, customer.customName, customer.pickupType, customer.address, nameFlag, nameFlag).run();
+        const row = await env.DB.prepare(`${customerSelectSql()} WHERE id = ? LIMIT 1`).bind(id).first();
+        return json({ id, updated: true, customer: row });
+    }
+
+    if (request.method === "DELETE") {
+        // 有訂單紀錄的客戶不可刪除（與前端規則一致，保護訂單參照與稽核）。
+        const ordered = await env.DB.prepare("SELECT 1 FROM orders WHERE customer_id = ? LIMIT 1").bind(id).first();
+        if (ordered) return json({ error: "此客戶已有訂單紀錄，不可刪除" }, 409);
+        const result = await env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(id).run();
+        if (!result.meta.changes) return json({ error: "找不到客戶" }, 404);
+        return json({ id, deleted: true });
+    }
+    return null;
+}
+
 function isoFromTimestamp(timestamp) {
     const value = new Date(Number(timestamp) || Date.now());
     return Number.isNaN(value.getTime()) ? new Date().toISOString() : value.toISOString();
@@ -301,9 +400,16 @@ async function processPostback(env, record) {
             return { processed: false, error: "商品已停售" };
         }
 
-        const existingCustomer = await env.DB.prepare("SELECT id, nickname FROM customers WHERE line_user_id = ? LIMIT 1").bind(record.lineUserId).first();
+        const existingCustomer = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name
+            FROM customers WHERE line_user_id = ? LIMIT 1`).bind(record.lineUserId).first();
         const customerId = existingCustomer?.id || await stableId("LINE", record.lineUserId);
-        const customerName = String(record.displayName || "LINE 客戶").slice(0, 100);
+        // LINE 原始名稱只寫進 line_display_name；訂單顯示改用解析後名稱（團主自訂優先）。
+        const lineDisplayName = String(record.displayName || "").slice(0, 100).trim();
+        const customerName = CustomerName.resolveDisplayName({
+            custom_display_name: existingCustomer?.custom_display_name,
+            line_display_name: lineDisplayName || existingCustomer?.line_display_name,
+            nickname: existingCustomer?.nickname
+        }, "LINE 客戶");
         const existingOrder = await env.DB.prepare("SELECT id FROM orders WHERE customer_id = ? AND group_buy_id = ? LIMIT 1")
             .bind(customerId, parsed.groupBuyId).first();
         const orderId = existingOrder?.id || await stableId("ORD", `${customerId}:${parsed.groupBuyId}`);
@@ -312,11 +418,8 @@ async function processPostback(env, record) {
         const quantityBefore = Number(previousItem?.quantity || 0);
 
         const statements = [
-            env.DB.prepare(`INSERT INTO customers (id, nickname, line_user_id, pickup_type, profile_status, created_at, updated_at)
-                VALUES (?, ?, ?, NULL, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(line_user_id) DO UPDATE SET nickname = CASE
-                    WHEN customers.profile_status = 'pending' AND excluded.nickname <> '' THEN excluded.nickname ELSE customers.nickname END,
-                updated_at = CURRENT_TIMESTAMP`).bind(customerId, customerName, record.lineUserId)
+            env.DB.prepare(CustomerName.CUSTOMER_UPSERT_SQL)
+                .bind(customerId, lineDisplayName || "LINE 客戶", lineDisplayName || null, record.lineUserId)
         ];
 
         if (parsed.action === "view_order") {
@@ -337,7 +440,7 @@ async function processPostback(env, record) {
             raw_message, normalized_message, parsed_items, action, message_time, status, processed_at, related_order_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, CURRENT_TIMESTAMP, ?)`)
             .bind(`postback:${record.webhookEventId}`, record.webhookEventId, record.groupId, record.lineUserId,
-                customerName, inboxCustomerId, existingCustomer?.nickname || null,
+                lineDisplayName, inboxCustomerId, existingCustomer ? customerName : null,
                 friendlyMessage, record.data, parsed.action === "set_quantity" ? "replace" : "cancel",
                 isoFromTimestamp(record.timestamp), LineOrder.STATUS.IMPORTED, orderId);
 
@@ -620,6 +723,10 @@ async function routeRequest(request, env, context) {
         const handled = await handleProductRoutes(request, env, url);
         if (handled) return handled;
     }
+    if (url.pathname.startsWith("/api/customers")) {
+        const handled = await handleCustomerRoutes(request, env, url);
+        if (handled) return handled;
+    }
     if (request.method === "PUT" && /^\/api\/group-buys\/[^/]+$/.test(url.pathname)) {
         const payload = await readJson(request);
         if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
@@ -655,9 +762,14 @@ async function routeRequest(request, env, context) {
         // 供後台把 LINE 靜默收單（Postback）訂單同步回訂單管理／商品統計／Excel（2026-07-22 驗收補齊）
         const groupBuyId = (url.searchParams.get("group_buy_id") || "").trim();
         if (!groupBuyId) return json({ error: "缺少 group_buy_id" }, 400);
+        // customer_display_name：團主自訂名稱 > LINE 原始名稱 > legacy nickname（找不到客戶時為 null，
+        // 由前端再回退訂單歷史名稱）。customer_nickname 保留 legacy 欄位供舊版前端相容。
         const ordersResult = await env.DB.prepare(`SELECT o.id, o.customer_id, o.group_buy_id, o.pickup_type, o.status,
                 o.total_amount, o.created_at, o.updated_at,
-                c.nickname AS customer_nickname, c.pickup_type AS customer_pickup_type, c.address
+                c.nickname AS customer_nickname,
+                ${CustomerName.resolvedNameSql("c")} AS customer_display_name,
+                c.custom_display_name, c.line_display_name,
+                c.pickup_type AS customer_pickup_type, c.address
             FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
             WHERE o.group_buy_id = ? ORDER BY o.created_at LIMIT 1000`).bind(groupBuyId).all();
         const itemsResult = await env.DB.prepare(`SELECT i.order_id, i.product_id, i.product_code, i.quantity,
@@ -668,21 +780,32 @@ async function routeRequest(request, env, context) {
         return json({ orders: ordersResult.results, items: itemsResult.results });
     }
     if (request.method === "GET" && url.pathname === "/api/line-inbox") {
-        const rows = await env.DB.prepare("SELECT * FROM line_order_inbox ORDER BY message_time DESC LIMIT 500").all();
+        // customer_display_name = 目前應顯示的名稱（團主自訂優先）；customer_nickname 保留下單當時的歷史名稱。
+        const rows = await env.DB.prepare(`SELECT i.*, ${CustomerName.resolvedNameSql("c")} AS customer_display_name,
+                c.custom_display_name, c.line_display_name
+            FROM line_order_inbox i
+            LEFT JOIN customers c ON c.id = i.customer_id OR (i.customer_id IS NULL AND i.line_user_id <> '' AND c.line_user_id = i.line_user_id)
+            ORDER BY i.message_time DESC LIMIT 500`).all();
         return json(rows.results);
     }
     if (request.method === "POST" && /^\/api\/line-inbox\/[^/]+\/bind-customer$/.test(url.pathname)) {
         const messageId = decodeURIComponent(url.pathname.split("/")[3]);
         const payload = await readJson(request);
-        const customerId = String(payload?.customer_id || "").trim().toUpperCase();
+        // LINE- 前綴是 stableId 產生的暫存客戶編號（小寫 hex），不可大寫化，否則會變成「改客戶編號」。
+        const rawCustomerId = String(payload?.customer_id || "").trim();
+        const customerId = /^LINE-/i.test(rawCustomerId) ? rawCustomerId : rawCustomerId.toUpperCase();
         if (!customerId) return json({ error: "缺少客戶編號" }, 400);
-        const nickname = String(payload?.nickname || "").trim() || customerId;
-        const inbox = await env.DB.prepare("SELECT message_id, line_user_id FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
+        // payload.nickname 是團主在綁定視窗指定的名稱 → 存進 custom_display_name（LINE 事件永不覆蓋）。
+        const customName = String(payload?.nickname || "").trim().slice(0, 100);
+        const inbox = await env.DB.prepare("SELECT message_id, line_user_id, display_name FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
         if (!inbox) return json({ error: "找不到收件紀錄" }, 404);
         if (!inbox.line_user_id) return json({ error: "此訊息沒有 LINE 使用者 ID，無法綁定" }, 409);
-        const conflict = await env.DB.prepare("SELECT id, profile_status FROM customers WHERE line_user_id = ? AND id <> ?").bind(inbox.line_user_id, customerId).first();
+        const conflict = await env.DB.prepare(`SELECT id, profile_status, nickname, line_display_name, address
+            FROM customers WHERE line_user_id = ? AND id <> ?`).bind(inbox.line_user_id, customerId).first();
         if (conflict) {
-            const isAutoPending = conflict.profile_status === "pending" && /^LINE-/.test(conflict.id);
+            // LINE-<hex> 一律是 stableId 自動建立的暫存客戶（見 processPostback / liff.js），可安全合併；
+            // 不再要求 profile_status 仍為 'pending'（團主可能已在客戶管理存過名稱／地址）。
+            const isAutoPending = /^LINE-/i.test(conflict.id);
             if (!isAutoPending) return json({ error: `此 LINE 帳號已綁定客戶 ${conflict.id}，請先處理重複綁定` }, 409);
             // Postback 靜默收單會先建立 LINE-xxx 暫存客戶：綁定時把暫存客戶的訂單移轉到正式客戶後移除暫存列，
             // 避免 line_user_id 唯一衝突（2026-07-22 驗收修正）。order_change_logs 保留原值作為稽核。
@@ -698,16 +821,32 @@ async function routeRequest(request, env, context) {
                 throw error;
             }
         }
-        await env.DB.prepare(`INSERT INTO customers (id, nickname, line_user_id, pickup_type, profile_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET nickname = excluded.nickname, line_user_id = excluded.line_user_id,
-            pickup_type = COALESCE(excluded.pickup_type, customers.pickup_type), profile_status = 'complete', updated_at = CURRENT_TIMESTAMP`)
-            .bind(customerId, nickname, inbox.line_user_id, String(payload?.pickup_type || "").trim() || null).run();
+        // LINE 原始名稱：優先沿用被合併的暫存客戶所記錄的名稱，否則用收件匣當時的 LINE 顯示名稱。
+        const lineDisplayName = String(conflict?.line_display_name || conflict?.nickname || inbox.display_name || "").trim().slice(0, 100) || null;
+        const resolvedName = customName || lineDisplayName || customerId;
+        // 沿用被合併暫存客戶的外送地址，避免客人在 LIFF 填好的地址在綁定後消失。
+        const mergedAddress = conflict?.address == null || String(conflict.address).trim() === "" ? null : String(conflict.address);
+        await env.DB.prepare(`INSERT INTO customers
+            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT(id) DO UPDATE SET
+                custom_display_name = excluded.custom_display_name,
+                address = COALESCE(customers.address, excluded.address),
+                line_display_name = COALESCE(NULLIF(TRIM(COALESCE(excluded.line_display_name, '')), ''), customers.line_display_name),
+                nickname = COALESCE(
+                    NULLIF(TRIM(COALESCE(excluded.custom_display_name, '')), ''),
+                    NULLIF(TRIM(COALESCE(COALESCE(NULLIF(TRIM(COALESCE(excluded.line_display_name, '')), ''), customers.line_display_name), '')), ''),
+                    customers.nickname),
+                line_user_id = excluded.line_user_id,
+                pickup_type = COALESCE(excluded.pickup_type, customers.pickup_type),
+                profile_status = 'complete', updated_at = CURRENT_TIMESTAMP`)
+            .bind(customerId, resolvedName, customName || null, lineDisplayName, inbox.line_user_id,
+                String(payload?.pickup_type || "").trim() || null, mergedAddress).run();
         const updated = await env.DB.prepare(`UPDATE line_order_inbox SET customer_id = ?, customer_nickname = ?,
             status = CASE WHEN status = ? THEN ? ELSE status END
             WHERE line_user_id = ?`)
-            .bind(customerId, nickname, LineOrder.STATUS.CUSTOMER_UNMATCHED, LineOrder.STATUS.READY, inbox.line_user_id).run();
-        return json({ bound: true, customer_id: customerId, updated_messages: updated.meta.changes });
+            .bind(customerId, resolvedName, LineOrder.STATUS.CUSTOMER_UNMATCHED, LineOrder.STATUS.READY, inbox.line_user_id).run();
+        return json({ bound: true, customer_id: customerId, customer_display_name: resolvedName, updated_messages: updated.meta.changes });
     }
     if (request.method === "POST" && /^\/api\/line-inbox\/[^/]+\/import$/.test(url.pathname)) {
         const messageId = decodeURIComponent(url.pathname.split("/")[3]);
@@ -735,6 +874,7 @@ async function fetchHandler(request, env, context) {
 
 module.exports = {
     fetch: fetchHandler, createDependencies, corsHeaders, isAdmin, withCors, findTargetOrder, importInboxRecord,
-    validateProductPayload, handleProductRoutes, processPostback, reserveWebhookEvent, validateGroupBuyPayload,
+    validateProductPayload, handleProductRoutes, validateCustomerPayload, handleCustomerRoutes,
+    processPostback, reserveWebhookEvent, validateGroupBuyPayload,
     upsertGroupBuy, getFlexContext, publishFlexMessage, stableId
 };

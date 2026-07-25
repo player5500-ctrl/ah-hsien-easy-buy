@@ -9,6 +9,32 @@ function escapeHtml(value) {
     }[ch]));
 }
 
+// --- 客戶名稱解析（全站唯一入口，實作在 customer-name.js） ---
+// 顯示優先順序：團主自訂名稱(customDisplayName) > LINE 原始名稱(lineDisplayName)
+//              > legacy nickname > 訂單下單當時的歷史名稱 > 未知客戶
+// 所有顯示客戶名稱的地方（訂單列表／詳情／依客戶整理／付款／配送／出貨／儀表板／
+// 列印／Excel 匯出／搜尋排序）都必須呼叫這裡，避免只修好其中一頁。
+function findCustomerById(customerId) {
+    if (!customerId) return null;
+    return state.customers.find(c => c.id === customerId) || null;
+}
+
+function customerDisplayName(customer, snapshot) {
+    return CustomerName.resolveDisplayName(customer || {}, snapshot);
+}
+
+// 訂單顯示名稱：一律透過 customerId 關聯客戶資料取「目前」名稱，
+// 找不到客戶時才回退訂單自身記錄的歷史名稱（customerNickname）。
+function orderCustomerName(order) {
+    if (!order) return CustomerName.UNKNOWN;
+    return CustomerName.resolveDisplayName(findCustomerById(order.customerId) || {}, order.customerNickname);
+}
+
+// 供搜尋／排序使用（保證是字串，避免 undefined.toLowerCase 例外）
+function orderCustomerNameForSort(order) {
+    return String(orderCustomerName(order) || '');
+}
+
 // --- 系統資料狀態庫 ---
 let state = {
     groupBuys: [],
@@ -478,7 +504,7 @@ function renderDashboard() {
         incompleteHtml += `
             <tr>
                 <td><a onclick="viewOrderDetail('${o.id}')" style="color: var(--primary-orange); cursor:pointer; font-weight:700;">${o.id}</a></td>
-                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(o.customerNickname)}</td>
+                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(orderCustomerName(o))}</td>
                 <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                 <td style="font-weight:700;">NT$ ${o.totalAmount}</td>
                 <td><span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></td>
@@ -498,7 +524,7 @@ function renderDashboard() {
         recentHtml += `
             <tr>
                 <td><a onclick="viewOrderDetail('${o.id}')" style="color: var(--primary-orange); cursor:pointer; font-weight:700;">${o.id}</a></td>
-                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(o.customerNickname)}</td>
+                <td><span class="badge badge-id" style="margin-right:6px;">${escapeHtml(o.customerId)}</span>${escapeHtml(orderCustomerName(o))}</td>
                 <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                 <td style="font-weight:700;">NT$ ${o.totalAmount}</td>
                 <td><span class="badge ${o.paymentStatus === '已付款' ? 'badge-paid' : 'badge-unpaid'}">${o.paymentStatus}</span></td>
@@ -1302,7 +1328,7 @@ function printPackingSlips() {
         return `<div class="print-page">
             <h2>包貨單｜${escapeHtml(title)}</h2>
             <div class="print-meta">
-                客戶編號：${escapeHtml(o.customerId)}　客戶暱稱：${escapeHtml(o.customerNickname)}<br>
+                客戶編號：${escapeHtml(o.customerId)}　客戶暱稱：${escapeHtml(orderCustomerName(o))}<br>
                 取貨方式：${escapeHtml(o.pickupType || '未指定')}　電話：${escapeHtml(o.phone || '')}
                 ${o.pickupType === '外送' ? `<br>地址：${escapeHtml(o.address || '')}` : ''}
             </div>
@@ -1345,7 +1371,7 @@ function printPickupList(type) {
     const unspecified = orders.filter(o => !o.pickupType);
     if (!matched.length && !unspecified.length) return alert(`目前團購沒有${type}訂單可列印。`);
     const rowsOf = (list) => list.map(o => `<tr>
-        <td>${escapeHtml(o.customerId)}</td><td>${escapeHtml(o.customerNickname)}</td>
+        <td>${escapeHtml(o.customerId)}</td><td>${escapeHtml(orderCustomerName(o))}</td>
         <td>${escapeHtml(o.phone || '')}</td>
         <td>${type === '外送' ? escapeHtml(o.address || '') : escapeHtml((o.items || []).map(it => `${it.productName}×${it.quantity}`).join('、'))}</td>
         <td>NT$ ${effectiveOrderTotal(o).toLocaleString()}</td>
@@ -1362,6 +1388,43 @@ function printPickupList(type) {
 // 把 LINE 靜默收單（Postback）在 D1 建立的訂單同步回本機訂單管理／統計／Excel。
 // 只同步 ORD- 前綴（雲端產生）的訂單，不覆蓋手動建立的本地訂單；
 // 已同步訂單保留本地的付款狀態、包貨勾選與備註，只更新品項數量與金額。
+// 先把雲端客戶（含團主自訂名稱）同步回本機，再同步訂單，
+// 這樣訂單顯示才會拿到「024-蜜茶」而不是 LINE 原始名稱「蜜茶」。
+// 雲端 D1 是客戶名稱的單一真實來源（團主一按儲存就會 PUT 上去）。
+async function syncCustomersFromCloud() {
+    if (!getCloudApiKey()) return { skipped: true };
+    const result = await cloudFetch('/api/customers');
+    if (result.error || result.skipped) return result;
+    const rows = Array.isArray(result.data) ? result.data : [];
+    let changed = 0;
+    rows.forEach(row => {
+        if (!row || !row.id) return;
+        const idx = state.customers.findIndex(c => c.id === row.id);
+        // 只補齊本機已有的客戶。沒有訂單的雲端暫存客戶不要灌進客戶管理／下拉選單；
+        // 有訂單的客戶會由 syncLineOrdersFromCloud 自動建立本機列。
+        if (idx === -1) return;
+        const local = state.customers[idx];
+        const merged = {
+            ...local,
+            id: row.id,
+            // 雲端沒有自訂名稱時保留本機值：PUT 可能因離線／金鑰錯誤而尚未成功，
+            // 不可讓同步把團主剛改好的名稱靜默還原成 LINE 原始名稱。
+            customDisplayName: row.custom_display_name || local.customDisplayName || null,
+            lineDisplayName: row.line_display_name || local.lineDisplayName || '',
+            lineUserId: row.line_user_id || local.lineUserId || '',
+            // 電話與備註只存在本機，雲端沒有這兩個欄位，保留本機值
+            phone: local.phone || '',
+            address: local.address || row.address || '',
+            pickupType: local.pickupType || row.pickup_type || ''
+        };
+        merged.nickname = CustomerName.mirrorNickname(merged, row.id);
+        state.customers[idx] = merged;
+        changed += 1;
+    });
+    if (changed) saveStateToStorage();
+    return { data: { synced: changed } };
+}
+
 async function syncLineOrdersFromCloud() {
     if (!getCloudApiKey() || !state.activeGroupBuyId) return { skipped: true };
     const result = await cloudFetch(`/api/orders?group_buy_id=${encodeURIComponent(state.activeGroupBuyId)}`);
@@ -1373,8 +1436,22 @@ async function syncLineOrdersFromCloud() {
     let changed = 0;
     orders.forEach(o => {
         if (!/^ORD-/.test(String(o.id))) return;
-        if (o.customer_id && !state.customers.some(c => c.id === o.customer_id)) {
-            state.customers.push({ id: o.customer_id, nickname: o.customer_nickname || o.customer_id, phone: '', address: '', notes: 'LINE 靜默收單自動建立，請補齊電話與地址' });
+        // 自動建立／補齊本機客戶列：LINE 原始名稱與團主自訂名稱分開存，
+        // 絕不用 LINE 原始名稱覆蓋團主已設定的名稱。
+        if (o.customer_id) {
+            const idx = state.customers.findIndex(c => c.id === o.customer_id);
+            const local = idx > -1 ? state.customers[idx] : null;
+            const merged = {
+                ...(local || {}),
+                id: o.customer_id,
+                customDisplayName: o.custom_display_name || (local ? local.customDisplayName : null) || null,
+                lineDisplayName: o.line_display_name || (local ? local.lineDisplayName : '') || '',
+                phone: (local && local.phone) || '',
+                address: (local && local.address) || o.address || '',
+                notes: (local && local.notes) || 'LINE 靜默收單自動建立，請補齊電話與地址'
+            };
+            merged.nickname = CustomerName.mirrorNickname(merged, o.customer_display_name || o.customer_nickname || o.customer_id);
+            if (idx > -1) state.customers[idx] = merged; else state.customers.push(merged);
         }
         const customer = state.customers.find(c => c.id === o.customer_id) || {};
         const existing = state.orders.find(x => x.id === o.id);
@@ -1390,7 +1467,9 @@ async function syncLineOrdersFromCloud() {
             id: o.id,
             groupBuyId: o.group_buy_id,
             customerId: o.customer_id,
-            customerNickname: o.customer_nickname || (existing && existing.customerNickname) || o.customer_id,
+            // 訂單只保留「下單當時」的歷史名稱 snapshot；畫面顯示一律走 orderCustomerName() 重新解析，
+            // 所以這裡即使存 LINE 原始名稱也不會讓後台顯示回「蜜茶」。
+            customerNickname: (existing && existing.customerNickname) || o.customer_display_name || o.customer_nickname || o.customer_id,
             phone: customer.phone || (existing && existing.phone) || '',
             address: (existing && existing.address) || o.address || customer.address || '',
             pickupType: (existing && existing.pickupType) || o.pickup_type || o.customer_pickup_type || '',
@@ -1408,6 +1487,8 @@ async function syncLineOrdersFromCloud() {
         if (idx > -1) state.orders[idx] = mapped; else state.orders.push(mapped);
         changed += 1;
     });
+    // 訂單同步後再補齊客戶資料（團主自訂名稱、取貨方式、外送地址）
+    await syncCustomersFromCloud();
     if (changed) saveStateToStorage();
     return { data: { synced: changed } };
 }
@@ -1565,7 +1646,8 @@ function renderCustomers() {
         const s = customerFilters.search.toLowerCase();
         list = list.filter(c => 
             c.id.toLowerCase().includes(s) || 
-            c.nickname.toLowerCase().includes(s) || 
+            customerDisplayName(c).toLowerCase().includes(s) || 
+            String(c.lineDisplayName || '').toLowerCase().includes(s) || 
             c.phone.includes(s) || 
             c.address.toLowerCase().includes(s)
         );
@@ -1580,7 +1662,7 @@ function renderCustomers() {
         html += `
             <tr>
                 <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${escapeHtml(c.id)}</span></td>
-                <td style="font-weight:700;">${escapeHtml(c.nickname)}</td>
+                <td style="font-weight:700;">${escapeHtml(customerDisplayName(c))}${lineNameHintHtml(c)}</td>
                 <td style="font-family: Outfit;">${escapeHtml(c.phone)}</td>
                 <td style="font-size:13px;">${c.address ? escapeHtml(c.address) : '<span style="color:var(--text-muted);">自取客戶/無地址</span>'}</td>
                 <td style="font-size:13px; color:var(--text-muted);">${escapeHtml(c.notes || '')}</td>
@@ -1598,7 +1680,7 @@ function renderCustomers() {
         mobileHtml += `
             <div class="mobile-card">
                 <div class="mobile-card-row">
-                    <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(c.id)}</span> ${escapeHtml(c.nickname)}</span>
+                    <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(c.id)}</span> ${escapeHtml(customerDisplayName(c))}${lineNameHintHtml(c)}</span>
                     <span style="font-family:Outfit; font-weight:500;">${escapeHtml(c.phone)}</span>
                 </div>
                 <div class="mobile-card-divider"></div>
@@ -1619,6 +1701,27 @@ function renderCustomers() {
 
     tbody.innerHTML = html || `<tr><td colspan="6" style="text-align:center; color:var(--text-muted);">無客戶資料</td></tr>`;
     mobileList.innerHTML = mobileHtml || `<div style="text-align:center; color:var(--text-muted); padding:20px;">無客戶資料</div>`;
+}
+
+// 客戶列表小字提示：顯示 LINE 原始名稱，讓團主知道自訂名稱蓋掉了什麼
+function lineNameHintHtml(c) {
+    const lineName = String((c && c.lineDisplayName) || '').trim();
+    if (!lineName || lineName === customerDisplayName(c)) return '';
+    return `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">LINE 名稱：${escapeHtml(lineName)}</div>`;
+}
+
+// 客戶編輯視窗提示：說明留空會回退 LINE 原始名稱
+function renderCustomerLineNameHint(c) {
+    const hint = document.getElementById('cust-line-name-hint');
+    if (!hint) return;
+    const lineName = String((c && c.lineDisplayName) || '').trim();
+    if (!lineName) {
+        hint.style.display = 'none';
+        hint.textContent = '';
+        return;
+    }
+    hint.style.display = 'block';
+    hint.textContent = `此客戶的 LINE 原始名稱為「${lineName}」；留空則顯示 LINE 原始名稱。`;
 }
 
 function onCustomerFilterChange() {
@@ -1668,12 +1771,12 @@ function checkDuplicateCustomerWarning() {
 
         // 規則 2：電話號碼去格式後相同
         if (cleanPhone && formatPhoneForCompare(c.phone) === cleanPhone) {
-            duplicates.push(`電話與客戶 [${c.id} ${c.nickname}] 重複`);
+            duplicates.push(`電話與客戶 [${c.id} ${customerDisplayName(c)}] 重複`);
         }
 
         // 規則 3：暱稱且地址完全相同
-        if (nickname && address && c.nickname === nickname && c.address === address) {
-            duplicates.push(`暱稱與地址與客戶 [${c.id} ${c.nickname}] 相同`);
+        if (nickname && address && customerDisplayName(c) === nickname && c.address === address) {
+            duplicates.push(`暱稱與地址與客戶 [${c.id} ${customerDisplayName(c)}] 相同`);
         }
     });
 
@@ -1714,7 +1817,13 @@ function openCustomerModal(id = '') {
         const c = state.customers.find(x => x.id === id);
         if (c) {
             document.getElementById('cust-id').value = c.id;
-            document.getElementById('cust-nickname').value = c.nickname;
+            // 暱稱欄位＝團主自訂名稱；留空代表取消自訂、回退顯示 LINE 原始名稱。
+            // 只預填「確實存在的自訂名稱」：沒有自訂名稱的 LINE 客戶要留空，
+            // 否則團主只想改電話按存檔，就會把 LINE 原始名稱寫成自訂名稱（LINE 之後改名永不反映）。
+            document.getElementById('cust-nickname').value = CustomerName.hasCustomName(c)
+                ? String(c.customDisplayName)
+                : (String(c.lineDisplayName || '').trim() ? '' : (c.nickname || ''));
+            renderCustomerLineNameHint(c);
             document.getElementById('cust-phone').value = c.phone;
             document.getElementById('cust-address').value = c.address;
             document.getElementById('cust-notes').value = c.notes;
@@ -1722,6 +1831,7 @@ function openCustomerModal(id = '') {
     } else {
         title.textContent = "新增客戶";
         document.getElementById('customer-edit-mode').value = "create";
+        renderCustomerLineNameHint(null);
         autoGenerateCustId();
     }
     modal.classList.add('show');
@@ -1732,50 +1842,94 @@ function closeCustomerModal() {
 }
 
 function saveCustomer() {
-    const id = document.getElementById('cust-id').value.trim().toUpperCase();
+    const editModeValue = document.getElementById('customer-edit-mode').value;
+    const rawId = document.getElementById('cust-id').value.trim();
+    // 只有新增時才把編號正規化成大寫；LINE 自動建立的客戶編號是 LINE-<小寫hex>，
+    // 編輯時大寫化會找不到本機客戶，導致「顯示儲存成功但其實沒改到」並在雲端建出幽靈客戶。
+    const id = editModeValue === 'create' ? rawId.toUpperCase() : rawId;
     const nickname = document.getElementById('cust-nickname').value.trim();
     const phone = document.getElementById('cust-phone').value.trim();
     const address = document.getElementById('cust-address').value.trim();
     const notes = document.getElementById('cust-notes').value.trim();
     const editMode = document.getElementById('customer-edit-mode').value;
 
-    if (!id || !nickname || !phone) {
-        alert("請輸入客戶編號、暱稱與連絡電話！");
+    const existingIdx = state.customers.findIndex(c => c.id === id);
+    const existing = existingIdx > -1 ? state.customers[existingIdx] : null;
+    const lineDisplayName = String((existing && existing.lineDisplayName) || '').trim();
+
+    if (!id) {
+        alert("請輸入客戶編號！");
         return;
     }
-
-    const existingIdx = state.customers.findIndex(c => c.id === id);
+    // LINE 客戶（已有 LINE 原始名稱）允許暱稱／電話留空：暱稱留空即取消自訂名稱、回退 LINE 原始名稱。
+    if (!lineDisplayName && !nickname) {
+        alert("請輸入客戶暱稱！");
+        return;
+    }
 
     if (editMode === 'create' && existingIdx > -1) {
         alert(`客戶編號 ${id} 已存在，請使用其他編號或自動推算！`);
         return;
     }
+    if (editMode === 'edit' && existingIdx === -1) {
+        alert(`找不到客戶編號 ${id}，請關閉視窗後重新整理再試。`);
+        return;
+    }
+
+    // nickname 欄位＝團主自訂名稱（custom_display_name）。留空 → null，顯示時回退 LINE 原始名稱。
+    const record = {
+        ...(existing || {}),
+        id,
+        customDisplayName: nickname || null,
+        lineDisplayName: existing ? (existing.lineDisplayName || '') : '',
+        lineUserId: existing ? (existing.lineUserId || '') : '',
+        phone,
+        address,
+        notes
+    };
+    // nickname 保留為「目前應顯示的名稱」鏡射值，讓舊資料與舊畫面不會壞。
+    record.nickname = CustomerName.mirrorNickname(record, id);
 
     if (editMode === 'edit') {
-        if (existingIdx > -1) {
-            state.customers[existingIdx] = { id, nickname, phone, address, notes };
-            
-            // 同步更新當前團購活動訂單中的冗餘資訊
-            state.orders.forEach(o => {
-                if (o.customerId === id) {
-                    o.customerNickname = nickname;
-                    o.phone = phone;
-                    // 自取不覆蓋地址，外送若無自訂地址則可更新
-                    if (o.pickupType === "外送" && !o.address) {
-                        o.address = address;
-                    }
+        state.customers[existingIdx] = record;
+        // 訂單只同步電話與地址；客戶名稱一律在顯示時透過 customerId 關聯查詢，
+        // 不再把名稱寫死進訂單（訂單的 customerNickname 只留作下單當時的歷史紀錄）。
+        state.orders.forEach(o => {
+            if (o.customerId === id) {
+                o.phone = phone;
+                if (o.pickupType === "外送" && !o.address) {
+                    o.address = address;
                 }
-            });
-        }
+            }
+        });
     } else {
-        state.customers.push({ id, nickname, phone, address, notes });
+        state.customers.push(record);
     }
 
     saveStateToStorage();
     closeCustomerModal();
     renderCustomers();
     if (currentViewId === 'dashboard') renderDashboard();
-    alert("客戶資料儲存成功！");
+
+    // 關鍵：把團主自訂名稱寫回雲端 D1，否則下次同步會被 LINE 原始名稱蓋回去。
+    syncCustomerToCloud(record).then(result => {
+        renderCustomers();
+        alert(`客戶資料儲存成功！${cloudSyncSuffix(result)}`);
+    });
+}
+
+// 把團主設定的客戶名稱／取貨方式／地址寫回 D1（不送 line_user_id 與 LINE 原始名稱）
+async function syncCustomerToCloud(c) {
+    return cloudFetch(`/api/customers/${encodeURIComponent(c.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        // 只送團主真正管理的欄位；地址留空時完全不帶，避免清掉客人在 LIFF 自己填的外送地址。
+        body: JSON.stringify({
+            custom_display_name: c.customDisplayName || '',
+            ...(String(c.address || '').trim() ? { address: String(c.address).trim() } : {}),
+            ...(c.pickupType ? { pickup_type: c.pickupType } : {})
+        })
+    });
 }
 
 function deleteCustomer(id) {
@@ -1785,10 +1939,12 @@ function deleteCustomer(id) {
         return;
     }
 
-    if (confirm(`確定要永久刪除客戶「${id} ｜ ${state.customers.find(c=>c.id===id).nickname}」嗎？`)) {
+    if (confirm(`確定要永久刪除客戶「${id} ｜ ${customerDisplayName(findCustomerById(id))}」嗎？`)) {
         state.customers = state.customers.filter(c => c.id !== id);
         saveStateToStorage();
         renderCustomers();
+        // 一併清除雲端客戶列（背景執行，失敗不影響本機）
+        cloudFetch(`/api/customers/${encodeURIComponent(id)}`, { method: 'DELETE' });
         alert("客戶已刪除！");
     }
 }
@@ -1798,7 +1954,7 @@ function viewCustomerHistory(id) {
     const c = state.customers.find(x => x.id === id);
     if (!c) return;
 
-    document.getElementById('cust-history-title').textContent = `[${c.id}] ${c.nickname} 歷史訂購統計`;
+    document.getElementById('cust-history-title').textContent = `[${c.id}] ${customerDisplayName(c)} 歷史訂購統計`;
     const tbody = document.getElementById('cust-history-tbody');
     
     // 找出所有此客戶的訂單
@@ -1881,7 +2037,8 @@ function renderOrdersList() {
         list = list.filter(o => 
             o.id.toLowerCase().includes(s) || 
             o.customerId.toLowerCase().includes(s) || 
-            o.customerNickname.toLowerCase().includes(s) || 
+            orderCustomerNameForSort(o).toLowerCase().includes(s) || 
+            (o.customerNickname || '').toLowerCase().includes(s) || 
             o.phone.includes(s) || 
             (o.address && o.address.toLowerCase().includes(s)) ||
             o.items.some(it => it.productName.toLowerCase().includes(s))
@@ -1918,7 +2075,7 @@ function renderOrdersList() {
         if (sortVal === "cust-id-asc") return a.customerId.localeCompare(b.customerId, undefined, {numeric: true});
         if (sortVal === "cust-id-desc") return b.customerId.localeCompare(a.customerId, undefined, {numeric: true});
         
-        if (sortVal === "cust-name-asc") return a.customerNickname.localeCompare(b.customerNickname, "zh-Hant-TW");
+        if (sortVal === "cust-name-asc") return orderCustomerNameForSort(a).localeCompare(orderCustomerNameForSort(b), "zh-Hant-TW");
         
         // 外送優先
         if (sortVal === "pickup-asc") {
@@ -1966,7 +2123,7 @@ function renderOrdersList() {
                 <td style="padding:16px 20px;"><input type="checkbox" class="order-item-checkbox" value="${o.id}" ${isChecked} onchange="onOrderSelectChange('${o.id}', this.checked)"></td>
                 <td style="font-family: Outfit; font-weight:700;"><a onclick="viewOrderDetail('${o.id}')" style="color:var(--primary-orange); cursor:pointer;">${o.id}</a></td>
                 <td><span class="badge badge-id">${escapeHtml(o.customerId)}</span></td>
-                <td style="font-weight:700;">${escapeHtml(o.customerNickname)}</td>
+                <td style="font-weight:700;">${escapeHtml(orderCustomerName(o))}</td>
                 <td>
                     <div style="font-weight:500;">${escapeHtml(o.phone)}</div>
                     ${deliveryInfo}
@@ -1992,7 +2149,7 @@ function renderOrdersList() {
                     <span class="mobile-card-title">
                         <a onclick="viewOrderDetail('${o.id}')" style="color:var(--primary-orange); cursor:pointer; font-family:Outfit; font-weight:900;">${o.id}</a>
                         <span class="badge badge-id">${escapeHtml(o.customerId)}</span>
-                        <strong>${escapeHtml(o.customerNickname)}</strong>
+                        <strong>${escapeHtml(orderCustomerName(o))}</strong>
                     </span>
                     <span class="badge badge-status-${getStatusClass(o.orderStatus)}">${o.orderStatus}</span>
                 </div>
@@ -2149,7 +2306,7 @@ function viewOrderDetail(id) {
             </div>
             <div class="mobile-card-divider" style="margin:12px 0;"></div>
             <p><strong>客戶編號：</strong><span class="badge badge-id">${escapeHtml(o.customerId)}</span></p>
-            <p><strong>客戶暱稱：</strong>${escapeHtml(o.customerNickname)}</p>
+            <p><strong>客戶暱稱：</strong>${escapeHtml(orderCustomerName(o))}</p>
             <p><strong>連絡電話：</strong>${escapeHtml(o.phone)}</p>
             <p><strong>取貨方式：</strong><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></p>
             ${o.pickupType === '外送' ? `<p><strong>外送地址：</strong>${escapeHtml(o.address || '無')}</p>` : ''}
@@ -2196,7 +2353,7 @@ function openOrderModal(orderId = '') {
     const sortedCusts = [...state.customers].sort((a, b) => a.id.localeCompare(b.id, undefined, {numeric: true}));
     let custHtml = `<option value="">-- 請選擇客戶 --</option>`;
     sortedCusts.forEach(c => {
-        custHtml += `<option value="${escapeHtml(c.id)}">[${escapeHtml(c.id)}] ${escapeHtml(c.nickname)}</option>`;
+        custHtml += `<option value="${escapeHtml(c.id)}">[${escapeHtml(c.id)}] ${escapeHtml(customerDisplayName(c))}</option>`;
     });
     document.getElementById('ord-customer-select').innerHTML = custHtml;
 
@@ -2206,7 +2363,7 @@ function openOrderModal(orderId = '') {
         if (o) {
             document.getElementById('ord-group-buy').value = o.groupBuyId;
             document.getElementById('ord-customer-select').value = o.customerId;
-            document.getElementById('ord-cust-nickname').value = o.customerNickname;
+            document.getElementById('ord-cust-nickname').value = orderCustomerName(o);
             document.getElementById('ord-cust-phone').value = o.phone;
             document.getElementById('ord-cust-address').value = o.address;
             document.getElementById('ord-pickup-type').value = o.pickupType;
@@ -2264,7 +2421,7 @@ function onOrderCustomerSelect(custId) {
 
     const c = state.customers.find(x => x.id === custId);
     if (c) {
-        nicknameInput.value = c.nickname;
+        nicknameInput.value = customerDisplayName(c);
         phoneInput.value = c.phone;
         addressInput.value = c.address || "";
         
@@ -2504,7 +2661,8 @@ function renderCustomerSummaryView() {
     if (searchVal) {
         activeOrders = activeOrders.filter(o => 
             o.customerId.toLowerCase().includes(searchVal) ||
-            o.customerNickname.toLowerCase().includes(searchVal) ||
+            orderCustomerNameForSort(o).toLowerCase().includes(searchVal) ||
+            (o.customerNickname || '').toLowerCase().includes(searchVal) ||
             o.phone.includes(searchVal) ||
             (o.address && o.address.toLowerCase().includes(searchVal))
         );
@@ -2519,7 +2677,7 @@ function renderCustomerSummaryView() {
     activeOrders.sort((a, b) => {
         if (sortVal === "id-asc") return a.customerId.localeCompare(b.customerId, undefined, {numeric: true});
         if (sortVal === "id-desc") return b.customerId.localeCompare(a.customerId, undefined, {numeric: true});
-        if (sortVal === "name-asc") return a.customerNickname.localeCompare(b.customerNickname, "zh-Hant-TW");
+        if (sortVal === "name-asc") return orderCustomerNameForSort(a).localeCompare(orderCustomerNameForSort(b), "zh-Hant-TW");
         
         if (sortVal === "delivery-first") {
             if (a.pickupType === b.pickupType) return 0;
@@ -2576,7 +2734,7 @@ function renderCustomerSummaryView() {
                 <div class="customer-summary-header" onclick="toggleDetailPanel('${o.id}')">
                     <div class="customer-info-left">
                         <span class="badge badge-id">${escapeHtml(o.customerId)}</span>
-                        <span class="customer-name">${escapeHtml(o.customerNickname)}</span>
+                        <span class="customer-name">${escapeHtml(orderCustomerName(o))}</span>
                         <span class="customer-contact"><i class="fa-solid fa-phone"></i> ${escapeHtml(o.phone)}</span>
                         <span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span>
                     </div>
@@ -2736,7 +2894,7 @@ function viewProductBuyers(prodId) {
             html += `
                 <tr>
                     <td style="font-family: Outfit; font-weight:700;">${escapeHtml(o.customerId)}</td>
-                    <td style="font-weight:700;">${escapeHtml(o.customerNickname)}</td>
+                    <td style="font-weight:700;">${escapeHtml(orderCustomerName(o))}</td>
                     <td><span class="badge ${o.pickupType === '外送' ? 'badge-delivery' : 'badge-pickup'}">${o.pickupType}</span></td>
                     <td style="font-weight:900; color:var(--primary-orange);">${it.quantity}</td>
                     <td style="font-weight:700;">NT$ ${it.price * it.quantity}</td>
@@ -2812,7 +2970,7 @@ function exportToExcel() {
         const totalItemsCount = o.items.reduce((s, it) => s + it.quantity, 0);
         return {
             "客戶編號": o.customerId,
-            "客戶暱稱": o.customerNickname,
+            "客戶暱稱": orderCustomerName(o),
             "連絡電話": o.phone,
             "配送地址": o.pickupType === "外送" ? o.address : "自取",
             "取貨方式": o.pickupType,
@@ -2831,7 +2989,7 @@ function exportToExcel() {
             const unitPrice = effectiveUnitPrice(it, o.pickupType);
             dataSheet2.push({
                 "客戶編號": o.customerId,
-                "客戶暱稱": o.customerNickname,
+                "客戶暱稱": orderCustomerName(o),
                 "商品編號": it.productId,
                 "商品名稱": it.productName,
                 "規格": it.specs || "",
@@ -2869,7 +3027,7 @@ function exportToExcel() {
     // 4. 建立「外送及自取名單」
     const dataSheet4 = list.map(o => ({
         "客戶編號": o.customerId,
-        "客戶暱稱": o.customerNickname,
+        "客戶暱稱": orderCustomerName(o),
         "連絡電話": o.phone,
         "配送地址": o.pickupType === "外送" ? o.address : "",
         "取貨方式": o.pickupType,
@@ -2977,7 +3135,7 @@ function renderLineInbox() {
         const hasCustomer = Boolean(row.customer_id || row.customerId);
         const hasLineUser = Boolean(row.line_user_id || row.lineUserId);
         const customerCell = hasCustomer
-            ? `${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_nickname || row.customerNickname)}</small>`
+            ? `${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_display_name || row.customer_nickname || row.customerNickname)}</small>`
             : (hasLineUser
                 ? `<button class="btn btn-secondary btn-sm" onclick="openLineBindModal('${messageIdEncoded}', '${escapeLineText(row.display_name || row.displayName)}')"><i class="fa-solid fa-link"></i> 綁定客戶</button>`
                 : '<small>無 LINE ID</small>');
@@ -3032,7 +3190,7 @@ function openLineBindModal(encodedMessageId, displayName) {
     lineBindTargetMessageId = encodedMessageId;
     const select = document.getElementById('line-bind-customer-select');
     const sorted = [...state.customers].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }));
-    select.innerHTML = sorted.map(c => `<option value="${escapeLineText(c.id)}">${escapeLineText(c.id)}｜${escapeLineText(c.nickname)}${c.phone ? `（${escapeLineText(c.phone)}）` : ''}</option>`).join('');
+    select.innerHTML = sorted.map(c => `<option value="${escapeLineText(c.id)}">${escapeLineText(c.id)}｜${escapeLineText(customerDisplayName(c))}${c.phone ? `（${escapeLineText(c.phone)}）` : ''}</option>`).join('');
     document.getElementById('line-bind-display-name').textContent = displayName || '(未知名稱)';
     document.getElementById('line-bind-modal').classList.add('show');
 }
@@ -3052,7 +3210,11 @@ async function confirmLineBind() {
             'Content-Type': 'application/json',
             authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}`
         },
-        body: JSON.stringify({ customer_id: customer.id, nickname: customer.nickname })
+        // nickname 送的是團主自訂名稱（存進 custom_display_name），LINE 原始名稱由 Webhook 維護。
+        body: JSON.stringify({
+            customer_id: customer.id,
+            nickname: customer.customDisplayName != null ? customer.customDisplayName : (customer.nickname || '')
+        })
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -3060,6 +3222,8 @@ async function confirmLineBind() {
         return;
     }
     closeLineBindModal();
+    // 綁定後把雲端客戶（含 LINE 原始名稱）拉回本機，客戶管理才看得到 LINE 名稱提示
+    await syncCustomersFromCloud();
     await loadLineInbox();
-    alert(`綁定完成！${customer.id}｜${customer.nickname}，共回填 ${result.updated_messages} 則訊息。之後這位客戶的留言會自動配對。`);
+    alert(`綁定完成！${customer.id}｜${result.customer_display_name || customerDisplayName(customer)}，共回填 ${result.updated_messages} 則訊息。之後這位客戶的留言會自動配對。`);
 }

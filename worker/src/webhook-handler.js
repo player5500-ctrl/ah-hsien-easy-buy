@@ -27,6 +27,7 @@ async function processTextEvent(event, dependencies) {
     const groupId = event.source.groupId || event.source.roomId;
     const lineUserId = event.source.userId || "";
     if (dependencies.rememberLineGroup) await dependencies.rememberLineGroup(conversationType, groupId);
+    // LINE 原始顯示名稱（只用於記錄與輔助配對，永不作為客戶識別碼）
     const displayName = await dependencies.getDisplayName(conversationType, groupId, lineUserId);
     const parsed = LineOrder.parseMessage(event.message.text, await dependencies.getProductCodes());
     const customer = lineUserId ? await dependencies.findCustomer(lineUserId, displayName) : null;
@@ -40,7 +41,8 @@ async function processTextEvent(event, dependencies) {
         lineUserId,
         displayName,
         customerId: customer?.id || "",
-        customerNickname: customer?.nickname || "",
+        // 收件匣顯示名稱＝團主自訂名稱優先（findCustomer 已解析）；displayName 欄位保留 LINE 原始名稱。
+        customerNickname: customer?.displayName || customer?.nickname || "",
         rawMessage: event.message.text,
         normalizedMessage: parsed.normalized,
         parsedItems: parsed.items,

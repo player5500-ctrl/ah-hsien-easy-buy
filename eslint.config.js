@@ -7,7 +7,7 @@ module.exports = [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "commonjs",
-      globals: { ...globals.browser, ...globals.node, ...globals.worker, ProductVoice: "readonly", LineOrder: "readonly", LineNote: "readonly", XLSX: "readonly", liff: "readonly" }
+      globals: { ...globals.browser, ...globals.node, ...globals.worker, ProductVoice: "readonly", LineOrder: "readonly", LineNote: "readonly", CustomerName: "readonly", XLSX: "readonly", liff: "readonly" }
     },
     rules: {
       "no-undef": "error",

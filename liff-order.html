@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
     <meta name="format-detection" content="telephone=no">
     <title>阿賢 Easy 購｜線上下單</title>
-    <link rel="stylesheet" href="liff-order.css?v=20260717a">
+    <link rel="stylesheet" href="liff-order.css?v=20260727a">
     <!-- LINE LIFF SDK -->
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 </head>
@@ -94,8 +94,14 @@
             <button type="button" id="success-view-all" class="btn btn-secondary">查看我的全部訂單</button>
             <button type="button" id="success-close" class="btn btn-secondary">關閉並返回 LINE</button>
         </div>
+
+        <!-- 外部瀏覽器無法自動關閉分頁時的提示 -->
+        <div id="close-hint" class="card hidden">
+            <div class="notice notice-warn">在電腦或手機瀏覽器開啟時無法自動關閉分頁（只有在 LINE App 內才能）。訂單已存好，請直接關閉此分頁，或點下方按鈕回到 LINE。</div>
+            <a class="btn btn-primary" href="https://line.me/R/" target="_blank" rel="noopener">開啟 LINE</a>
+        </div>
     </div>
 
-    <script src="liff-order.js?v=20260717a"></script>
+    <script src="liff-order.js?v=20260727a"></script>
 </body>
 </html>

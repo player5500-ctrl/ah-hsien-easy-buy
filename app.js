@@ -3156,18 +3156,48 @@ function renderLineInbox() {
     }).join('');
 }
 
+function setLineInboxBusy(busy) {
+    const btn = document.getElementById('line-inbox-refresh');
+    if (!btn) return;
+    btn.disabled = busy;
+    btn.innerHTML = busy
+        ? '<i class="fa-solid fa-rotate fa-spin"></i> 更新中…'
+        : '<i class="fa-solid fa-rotate"></i> 重新整理';
+}
+
+function setLineInboxStamp(message) {
+    const stamp = document.getElementById('line-inbox-updated');
+    if (stamp) stamp.textContent = message;
+}
+
 async function loadLineInbox() {
     const base = getLineApiBase();
-    if (!base) { state.lineInbox = []; renderLineInbox(); return; }
+    if (!base) {
+        state.lineInbox = [];
+        renderLineInbox();
+        setLineInboxStamp('尚未設定 Worker API 網址');
+        return;
+    }
+    setLineInboxBusy(true);
+    setLineInboxStamp('更新中…');
     try {
-        const response = await fetch(`${base}/api/line-inbox`, { headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` } });
+        // 加時間戳 + no-store：避免瀏覽器/CDN 回舊快取，導致按了重新整理卻看不到新留言。
+        const response = await fetch(`${base}/api/line-inbox?t=${Date.now()}`, {
+            cache: 'no-store',
+            headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` }
+        });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         state.lineInbox = await response.json();
         renderLineInbox();
+        const now = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+        setLineInboxStamp(`已更新 ${now}（${state.lineInbox.length} 筆）`);
     } catch (error) {
         state.lineInbox = [];
         renderLineInbox();
+        setLineInboxStamp('更新失敗');
         alert(`無法讀取 LINE 訂單收件匣：${error.message}`);
+    } finally {
+        setLineInboxBusy(false);
     }
 }
 

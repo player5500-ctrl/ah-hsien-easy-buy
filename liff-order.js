@@ -555,9 +555,26 @@
     }
 
     function closeWindow() {
+        // 1) LINE App 內（LIFF 瀏覽器）：正常關閉視窗並回到聊天室。
+        var inClient = false;
         try {
-            if (liff && liff.closeWindow) { liff.closeWindow(); return; }
-        } catch (e) { /* 忽略 */ }
+            inClient = !!(typeof liff !== "undefined" && liff.isInClient && liff.isInClient());
+        } catch (e) { inClient = false; }
+        if (inClient) {
+            try { liff.closeWindow(); return; } catch (e) { /* 落到下方 fallback */ }
+        }
+
+        // 2) 外部瀏覽器（電腦 Chrome / 手機 Safari）：liff.closeWindow() 一律無效，
+        //    先嘗試關閉分頁（僅在此分頁是由 script 開啟時才會成功）。
+        try { window.close(); } catch (e) { /* 忽略 */ }
+
+        // 3) 分頁被瀏覽器擋下沒關掉 → 顯示手動關閉提示與回 LINE 的連結。
+        window.setTimeout(function () {
+            var hint = document.getElementById("close-hint");
+            if (!hint) return;
+            hint.classList.remove("hidden");
+            try { hint.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (e) { /* 忽略 */ }
+        }, 400);
     }
 
     function scrollTop() { window.scrollTo({ top: 0, behavior: "smooth" }); }

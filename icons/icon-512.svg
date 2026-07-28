@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="阿賢Easy購">
+  <rect width="512" height="512" rx="112" fill="#FF7A00"/>
+  <circle cx="384" cy="128" r="75" fill="#FFD93D" opacity=".95"/>
+  <path d="M117 144h48l24 176h179l32-125H186" fill="none" stroke="#fff" stroke-width="35" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M208 235h163" stroke="#fff" stroke-width="29" stroke-linecap="round" opacity=".82"/>
+  <circle cx="219" cy="381" r="29" fill="#fff"/>
+  <circle cx="352" cy="381" r="29" fill="#fff"/>
+</svg>

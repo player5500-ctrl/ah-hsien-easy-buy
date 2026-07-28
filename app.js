@@ -273,6 +273,7 @@ window.onload = function() {
     renderCurrentGroupBuySelect();
     switchView('dashboard');
     initializeProductVoiceSupport();
+    initializeMobileNavigation();
 };
 
 window.addEventListener('beforeunload', () => stopProductVoiceRecognition('已停止錄音'));
@@ -376,8 +377,7 @@ function switchView(viewId, subviewAction = '') {
     });
 
     // 關閉手機版側邊選單
-    const sidebar = document.getElementById('sidebar');
-    if (sidebar) sidebar.classList.remove('show');
+    closeMobileMenu();
 
     // 根據不同頁面載入特定資料
     if (viewId === 'dashboard') {
@@ -434,10 +434,50 @@ function switchView(viewId, subviewAction = '') {
     window.scrollTo(0, 0);
 }
 
+function setMobileMenuOpen(isOpen) {
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebarBackdrop');
+    const toggle = document.getElementById('mobileMenuToggle');
+    if (!sidebar) return;
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    const shouldOpen = Boolean(isOpen && isMobile);
+
+    sidebar.classList.toggle('show', shouldOpen);
+    sidebar.setAttribute('aria-hidden', String(isMobile && !shouldOpen));
+    document.body.classList.toggle('sidebar-open', shouldOpen);
+    if (backdrop) {
+        backdrop.classList.toggle('show', shouldOpen);
+        backdrop.setAttribute('aria-hidden', String(!shouldOpen));
+    }
+    if (toggle) {
+        toggle.setAttribute('aria-expanded', String(shouldOpen));
+        toggle.setAttribute('aria-label', shouldOpen ? '關閉側邊選單' : '開啟側邊選單');
+    }
+}
+
 // 手機版側邊選單開關
 function toggleMobileMenu() {
     const sidebar = document.getElementById('sidebar');
-    if (sidebar) sidebar.classList.toggle('show');
+    setMobileMenuOpen(!sidebar?.classList.contains('show'));
+}
+
+function closeMobileMenu() {
+    setMobileMenuOpen(false);
+}
+
+function initializeMobileNavigation() {
+    const mobileQuery = window.matchMedia('(max-width: 768px)');
+    const syncForViewport = event => {
+        if (!event.matches) closeMobileMenu();
+    };
+    if (typeof mobileQuery.addEventListener === 'function') {
+        mobileQuery.addEventListener('change', syncForViewport);
+    } else if (typeof mobileQuery.addListener === 'function') {
+        mobileQuery.addListener(syncForViewport);
+    }
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closeMobileMenu();
+    });
 }
 
 // 當前團購活動切換
@@ -451,6 +491,7 @@ function onGroupBuyChange(val) {
 // 渲染頂部活動選擇器
 function renderCurrentGroupBuySelect() {
     const select = document.getElementById('currentGroupBuySelect');
+    const selectMobile = document.getElementById('mobileGroupBuySelect');
     const selectExport = document.getElementById('export-group-select');
     const selectImport = document.getElementById('excel-import-group-select');
     
@@ -467,6 +508,7 @@ function renderCurrentGroupBuySelect() {
     });
 
     if (select) select.innerHTML = html;
+    if (selectMobile) selectMobile.innerHTML = html;
     if (selectExport) selectExport.innerHTML = html;
     if (selectImport) selectImport.innerHTML = html;
 }
@@ -481,7 +523,7 @@ function renderDashboard() {
     if (title) {
         title.innerHTML = activeGb 
             ? `${escapeHtml(activeGb.name)} <span class="badge ${activeGb.status === '開放' ? 'badge-group-open' : activeGb.status === '截止' ? 'badge-group-closed' : 'badge-group-completed'}">${activeGb.status}</span>`
-            : "尚未選擇/建立團購活動";
+            : "尚未建立團購活動";
     }
 
     // 篩選出當前活動的訂單 (排除已取消)

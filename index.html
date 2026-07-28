@@ -2,12 +2,20 @@
 <html lang="zh-Hant-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>阿賢Easy購管理系統</title>
+    <meta name="theme-color" content="#FF7A00">
+    <meta name="background-color" content="#FAF9F6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="阿賢Easy購">
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" type="image/svg+xml" href="icons/icon-192.svg">
+    <link rel="apple-touch-icon" href="icons/icon-192.svg">
     <!-- 引入 FontAwesome 圖示 -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- 引入系統 CSS 樣式 -->
-    <link rel="stylesheet" href="styles.css?v=20260721">
+    <link rel="stylesheet" href="styles.css?v=20260729-mobile-pwa">
 </head>
 <body>
 
@@ -79,6 +87,8 @@
                 <p>雙人專屬管理系統</p>
             </div>
         </aside>
+        <button class="sidebar-backdrop" id="sidebarBackdrop" type="button"
+            aria-label="關閉側邊選單" aria-hidden="true" onclick="closeMobileMenu()"></button>
 
         <!-- ==========================================
              主要顯示區域
@@ -86,9 +96,16 @@
         <main class="main-content">
             <!-- 頂部標頭 -->
             <header class="main-header">
-                <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleMobileMenu()">
+                <button class="mobile-menu-toggle" id="mobileMenuToggle" type="button"
+                    aria-label="開啟側邊選單" aria-controls="sidebar" aria-expanded="false"
+                    onclick="toggleMobileMenu()">
                     <i class="fa-solid fa-bars"></i>
                 </button>
+
+                <div class="mobile-brand" aria-label="阿賢Easy購">
+                    <span class="mobile-brand-icon"><i class="fa-solid fa-cart-shopping"></i></span>
+                    <span>阿賢Easy購</span>
+                </div>
                 
                 <!-- 當前團購活動選擇器 -->
                 <div class="header-active-group">
@@ -99,11 +116,16 @@
                 </div>
                 
                 <!-- 雙人管理資訊 -->
-                <div class="user-profile">
+                <button class="user-profile" type="button" aria-label="管理員帳號" title="管理員（阿賢夫婦）">
                     <div class="user-avatar"><i class="fa-solid fa-user-friends"></i></div>
                     <span>管理員 (阿賢夫婦)</span>
-                </div>
+                </button>
             </header>
+
+            <div class="mobile-group-context">
+                <label for="mobileGroupBuySelect"><i class="fa-solid fa-business-time"></i> 當前團購</label>
+                <select id="mobileGroupBuySelect" onchange="onGroupBuyChange(this.value)"></select>
+            </div>
 
             <!-- 內容本體 -->
             <div class="content-body">
@@ -119,39 +141,38 @@
                         </div>
                         <div class="button-group">
                             <button class="btn btn-primary" onclick="openOrderModal()"><i class="fa-solid fa-plus"></i> 新增訂單</button>
-                            <button class="btn btn-secondary" onclick="switchView('excel', 'export')"><i class="fa-solid fa-file-export"></i> 匯出 Excel</button>
                         </div>
                     </div>
 
                     <!-- 統計資訊 -->
                     <div class="stats-grid">
                         <div class="stat-card stat-orange">
-                            <span class="stat-label">客戶總數 (本團)</span>
+                            <span class="stat-label">本團客戶</span>
                             <span class="stat-value" id="stat-customers">0</span>
                             <div class="stat-icon"><i class="fa-solid fa-users"></i></div>
                         </div>
                         <div class="stat-card stat-coral">
-                            <span class="stat-label">訂單總金額</span>
+                            <span class="stat-label">訂單金額</span>
                             <span class="stat-value" id="stat-amount">NT$ 0</span>
                             <div class="stat-icon"><i class="fa-solid fa-hand-holding-dollar"></i></div>
                         </div>
                         <div class="stat-card stat-yellow">
-                            <span class="stat-label">未付款單數</span>
+                            <span class="stat-label">待付款</span>
                             <span class="stat-value" id="stat-unpaid">0</span>
                             <div class="stat-icon"><i class="fa-solid fa-hourglass-half"></i></div>
                         </div>
                         <div class="stat-card stat-blue">
-                            <span class="stat-label">未包貨客戶數</span>
+                            <span class="stat-label">待包貨</span>
                             <span class="stat-value" id="stat-unpacked">0</span>
                             <div class="stat-icon"><i class="fa-solid fa-box"></i></div>
                         </div>
                         <div class="stat-card stat-teal">
-                            <span class="stat-label">外送單數</span>
+                            <span class="stat-label">待外送</span>
                             <span class="stat-value" id="stat-delivery">0</span>
                             <div class="stat-icon"><i class="fa-solid fa-truck"></i></div>
                         </div>
                         <div class="stat-card stat-purple">
-                            <span class="stat-label">自取單數</span>
+                            <span class="stat-label">待自取</span>
                             <span class="stat-value" id="stat-pickup">0</span>
                             <div class="stat-icon"><i class="fa-solid fa-house-chimney-user"></i></div>
                         </div>
@@ -1304,11 +1325,23 @@
     <div id="print-area" aria-hidden="true"></div>
 
     <!-- 載入核心 JS 檔案 -->
-    <script src="product-voice.js"></script>
-    <script src="line-order.js"></script>
-    <script src="customer-name.js"></script>
-    <script src="customer-paste-parse.js"></script>
-    <script src="line-note.js"></script>
-    <script src="app.js"></script>
+    <script src="product-voice.js?v=20260729-mobile-pwa"></script>
+    <script src="line-order.js?v=20260729-mobile-pwa"></script>
+    <script src="customer-name.js?v=20260729-mobile-pwa"></script>
+    <script src="customer-paste-parse.js?v=20260729-mobile-pwa"></script>
+    <script src="line-note.js?v=20260729-mobile-pwa"></script>
+    <script src="app.js?v=20260729-mobile-pwa"></script>
+    <script src="pwa.js?v=20260729-mobile-pwa"></script>
+
+    <aside class="pwa-install-banner" id="pwaInstallBanner" role="status" aria-live="polite" hidden>
+        <div class="pwa-install-copy">
+            <strong><i class="fa-solid fa-mobile-screen-button"></i> 加入主畫面</strong>
+            <span id="pwaInstallMessage">安裝後可用獨立視窗開啟阿賢Easy購。</span>
+        </div>
+        <div class="pwa-install-actions">
+            <button class="btn btn-secondary btn-sm" type="button" onclick="dismissPwaInstall()">稍後</button>
+            <button class="btn btn-primary btn-sm" id="pwaInstallButton" type="button" onclick="installPwa()">立即安裝</button>
+        </div>
+    </aside>
 </body>
 </html>

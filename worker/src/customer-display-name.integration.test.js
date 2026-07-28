@@ -300,3 +300,101 @@ test("回歸：LINE- 暫存客戶編號不得被大寫化（那會變成偷改�
     assert.equal(customerRow(env).id, tempId);
     assert.equal(customerRow(env).custom_display_name, "024-蜜茶");
 });
+
+// --- migration-008：客戶備註（本名）跨裝置保存 ---
+
+test("migration-008 可由 migration-007 後的 schema 安全升級（additive，不動既有資料）", () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+        CREATE TABLE customers (id TEXT PRIMARY KEY, nickname TEXT NOT NULL, line_display_name TEXT, custom_display_name TEXT,
+            line_user_id TEXT UNIQUE, pickup_type TEXT, address TEXT,
+            profile_status TEXT NOT NULL DEFAULT 'complete', created_at TEXT, updated_at TEXT);
+        INSERT INTO customers (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status)
+            VALUES ('A001', '024-蜜茶', '024-蜜茶', '蜜茶', 'U2', '外送', '台北市信義路一段1號', 'complete');
+        INSERT INTO customers (id, nickname, profile_status) VALUES ('A002', '陳小明', 'complete');
+    `);
+    db.exec(fs.readFileSync(path.join(__dirname, "..", "migration-008-customer-notes.sql"), "utf8"));
+    const bound = db.prepare("SELECT * FROM customers WHERE id = 'A001'").get();
+    assert.equal(bound.notes, null, "新欄位可為空，不做回填");
+    assert.equal(bound.custom_display_name, "024-蜜茶", "既有欄位不得被動到");
+    assert.equal(bound.line_display_name, "蜜茶");
+    assert.equal(bound.line_user_id, "U2");
+    assert.equal(bound.pickup_type, "外送");
+    assert.equal(bound.address, "台北市信義路一段1號");
+    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM customers").get().c, 2, "不得刪除或新增資料列");
+    // 升級後才能寫入備註
+    db.prepare("UPDATE customers SET notes = ? WHERE id = 'A002'").run("常買紅茶，通常自取");
+    assert.equal(db.prepare("SELECT notes FROM customers WHERE id = 'A002'").get().notes, "常買紅茶，通常自取");
+    db.close();
+});
+
+test("migration-008：PUT /api/customers 要把備註存進 D1，GET 要回傳（跨裝置保存）", async () => {
+    const env = createEnv();
+    await postback(env, "evt-1", "蜜茶", 2);
+    const customerId = customerRow(env).id;
+    assert.equal(customerRow(env).notes, null, "LINE 事件不得寫備註");
+
+    const saved = await putCustomer(env, customerId, { nickname: "024-蜜茶", notes: "本名：陳蜜茶，外送放管理室" });
+    assert.equal(saved.status, 200, await saved.text());
+    assert.equal(customerRow(env).notes, "本名：陳蜜茶，外送放管理室");
+    assert.equal(customerRow(env).custom_display_name, "024-蜜茶");
+
+    // 單筆 GET 與清單 GET 都要看得到（前端 syncCustomersFromCloud 讀清單）
+    const one = await (await fetchHandler(new Request(`https://worker/api/customers/${encodeURIComponent(customerId)}`, { headers: AUTH }), env, {})).json();
+    assert.equal(one.notes, "本名：陳蜜茶，外送放管理室");
+    const listed = await (await fetchHandler(new Request("https://worker/api/customers", { headers: AUTH }), env, {})).json();
+    assert.equal(listed.find(r => r.id === customerId).notes, "本名：陳蜜茶，外送放管理室");
+});
+
+test("migration-008：沒帶 notes 的部分更新不得清掉備註；帶空字串才是清空", async () => {
+    const env = createEnv();
+    await postback(env, "evt-1", "蜜茶", 2);
+    const customerId = customerRow(env).id;
+    await putCustomer(env, customerId, { nickname: "024-蜜茶", notes: "常客" });
+    // 只更新取貨方式（前端「地址留空就不帶」的那種部分更新）→ 備註必須留著
+    await putCustomer(env, customerId, { pickup_type: "自取" });
+    assert.equal(customerRow(env).notes, "常客", "部分更新不得把備註洗掉");
+    assert.equal(customerRow(env).pickup_type, "自取");
+    // 團主真的把備註欄清空 → 帶空字串 → 清成 NULL
+    await putCustomer(env, customerId, { nickname: "024-蜜茶", notes: "" });
+    assert.equal(customerRow(env).notes, null);
+    assert.equal(customerRow(env).custom_display_name, "024-蜜茶", "清備註不可影響名稱");
+});
+
+test("migration-008：備註前後空白要 trim、超過 500 字截斷（不擋存檔）", async () => {
+    const env = createEnv();
+    await postback(env, "evt-1", "蜜茶", 2);
+    const customerId = customerRow(env).id;
+    await putCustomer(env, customerId, { notes: "  兩側空白  " });
+    assert.equal(customerRow(env).notes, "兩側空白");
+    const tooLong = await putCustomer(env, customerId, { notes: "備".repeat(600) });
+    assert.equal(tooLong.status, 200, "過長不擋存檔，只截斷");
+    assert.equal(customerRow(env).notes.length, 500);
+});
+
+test("migration-008：舊客戶（notes 為 NULL）照樣載入，只改名稱不會弄出 undefined 備註", async () => {
+    const env = createEnv();
+    env.DB.database.prepare(`INSERT INTO customers (id, nickname, custom_display_name, line_display_name, profile_status)
+        VALUES ('A001', '陳小明', '001-陳小明', '陳小明', 'complete')`).run();
+    const listed = await (await fetchHandler(new Request("https://worker/api/customers", { headers: AUTH }), env, {})).json();
+    assert.equal(listed[0].notes, null, "舊客戶備註是 null，不可爆錯");
+    assert.equal(listed[0].customer_display_name, "001-陳小明");
+    const saved = await putCustomer(env, "A001", { nickname: "001-陳小明（VIP）" });
+    assert.equal(saved.status, 200);
+    const row = env.DB.database.prepare("SELECT * FROM customers WHERE id = 'A001'").get();
+    assert.equal(row.notes, null, "沒帶 notes 就維持 NULL，不可寫進 'undefined'");
+    assert.equal(row.custom_display_name, "001-陳小明（VIP）");
+});
+
+test("migration-008：新客戶（PUT 建檔）第一次就可帶備註", async () => {
+    const env = createEnv();
+    const saved = await putCustomer(env, "A009", { nickname: "009-阿賢", notes: "本名：王大賢" });
+    assert.equal(saved.status, 200);
+    const body = await saved.json();
+    assert.equal(body.customer.notes, "本名：王大賢", "回傳的 customer 也要帶 notes");
+    const row = env.DB.database.prepare("SELECT * FROM customers WHERE id = 'A009'").get();
+    assert.equal(row.notes, "本名：王大賢");
+    assert.equal(row.custom_display_name, "009-阿賢");
+    assert.equal(row.nickname, "009-阿賢");
+    assert.equal(row.line_user_id, null);
+});

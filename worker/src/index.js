@@ -3,6 +3,7 @@ const { handleWebhook } = require("./webhook-handler.js");
 const LineFlex = require("./line-flex.js");
 const Liff = require("./liff.js");
 const CustomerName = require("../../customer-name.js");
+const CustomerPasteParse = require("../../customer-paste-parse.js");
 
 const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
 
@@ -260,11 +261,12 @@ async function handleProductRoutes(request, env, url) {
 // 客戶管理 API（後台）
 // 團主在「客戶管理」修改的名稱必須存到雲端，否則只留在瀏覽器 localStorage，
 // 下次同步就會被 D1 的 LINE 原始名稱蓋回去（這是「訂單仍顯示蜜茶」的直接原因之一）。
-// 這裡只寫 custom_display_name / pickup_type / address，
+// 這裡只寫 custom_display_name / pickup_type / address / notes，
 // 永不寫 line_user_id 與 line_display_name（識別碼與 LINE 原始名稱由 Webhook 維護）。
+// notes（備註／本名）同理：只存在 localStorage 的話換裝置就消失，所以 migration-008 之後一律存雲端。
 // ==========================================================================
 function customerSelectSql() {
-    return `SELECT id, nickname, line_display_name, custom_display_name, line_user_id, pickup_type, address,
+    return `SELECT id, nickname, line_display_name, custom_display_name, line_user_id, pickup_type, address, notes,
         profile_status, created_at, updated_at, ${CustomerName.resolvedNameSql()} AS customer_display_name
         FROM customers`;
 }
@@ -283,54 +285,88 @@ function validateCustomerPayload(payload) {
     // 地址空字串視為「未提供」而不是「清空」：地址是客人在 LIFF 自己填的資料，
     // 團主在客戶管理存檔時不可把它清掉（COALESCE('', x) 會等於 ''，所以一定要轉 null）。
     const rawAddress = payload.address === undefined || payload.address === null ? "" : String(payload.address).trim().slice(0, 200);
-    return { customName: customName || null, nameProvided, pickupType: pickupType || null, address: rawAddress || null };
+    // 備註（多半是客人本名）是團主自己的筆記，所以「帶空字串」＝真的要清空，「完全沒帶」＝這次不動備註。
+    // 與名稱同一套語意，否則只更新取貨方式的請求會把備註清掉。過長一律截斷（不擋存檔）。
+    const notesProvided = payload.notes !== undefined;
+    const rawNotes = payload.notes === undefined || payload.notes === null ? "" : String(payload.notes).trim().slice(0, 500);
+    return {
+        customName: customName || null, nameProvided, pickupType: pickupType || null, address: rawAddress || null,
+        notes: rawNotes || null, notesProvided
+    };
 }
 
 // ==========================================================================
 // 客戶「快速貼上匯入」批次匯入（POST /api/customers/bulk-import）
-// 只寫名稱三欄（custom_display_name / line_display_name / nickname）：
+//
+// 欄位對應照 Vanny 手動建檔的既有慣例（不是把貼上的編號當 id）：
+//   id                   = 系統自動配號 A001／A002…（接續現有最大 A### 往下發）
+//   custom_display_name  = `<編號>-<LINE暱稱>`，例：005-小葉娃
+//   line_display_name    = LINE 暱稱（LINE 訊息比對靠這欄）
+//   nickname             = 本名（NOT NULL，向後相容）
+//   notes                = 本名（備註欄，migration-008 之後存雲端，換裝置才看得到）
+//   phone                = 前端 localStorage 才有的欄位，D1 customers 沒有這一欄
+//
+// 只寫名稱三欄＋備註（custom_display_name / line_display_name / nickname / notes）：
 // line_user_id、pickup_type、address、profile_status 一律不動，
 // 否則 LINE 綁定會斷、客人在 LIFF 填的地址會被清掉、訂單也會找不到客戶。
-// ⚠️ 客戶編號一律是字串（"001" 不是 1），不可用 Number() 處理。
+// ⚠️ 貼上的編號一律是字串（"001" 不是 1），不可用 Number() 處理。
+// ⚠️ 配號一律在伺服器端算（前端算的只用來預覽），否則兩個分頁同時匯入會撞 PRIMARY KEY。
 // ==========================================================================
 const BULK_IMPORT_MAX_ITEMS = 500;
-const BULK_IMPORT_LOOKUP_CHUNK = 100;
+// 配號與「已存在」判斷都要看全表：配號要抓最大 A###（字典序不可靠，得在 JS 比數字），
+// 已存在要比對 custom_display_name 的 `<編號>-` 前綴（無法用 id IN (...) 查）。
+const BULK_IMPORT_SCAN_LIMIT = 10000;
 
 function validateBulkImportItem(item) {
     if (!item || typeof item !== "object") return { error: "資料格式錯誤" };
-    const id = item.id === null || item.id === undefined ? "" : String(item.id).trim();
+    const code = item.code === null || item.code === undefined ? "" : String(item.code).trim();
     const name = item.name === null || item.name === undefined ? "" : String(item.name).trim();
     const lineName = item.lineName === null || item.lineName === undefined ? "" : String(item.lineName).trim();
     const mode = String(item.mode || "skip").trim() === "update" ? "update" : "skip";
-    if (!id) return { error: "缺少客戶編號" };
-    if (id.length > 32) return { error: "客戶編號請縮短至 32 字以內" };
+    const existingId = item.existingId === null || item.existingId === undefined ? "" : String(item.existingId).trim();
+    if (!code) return { error: "缺少客戶編號" };
+    if (code.length > 16) return { error: "客戶編號請縮短至 16 字以內" };
+    if (!/^\d+$/.test(code)) return { error: "客戶編號只接受數字" };
     if (!name) return { error: "缺少客戶姓名" };
     if (name.length > 100) return { error: "客戶姓名請縮短至 100 字以內" };
     if (lineName.length > 100) return { error: "LINE 名稱請縮短至 100 字以內" };
+    if (existingId.length > 64) return { error: "客戶識別碼格式錯誤" };
     // LINE 名稱留空時沿用姓名（與前端解析規則一致）。
-    return { id, name, lineName: lineName || name, mode };
+    return { code, name, lineName: lineName || name, mode, existingId };
 }
 
-async function findExistingCustomerRows(env, ids) {
-    const found = new Map();
-    for (let index = 0; index < ids.length; index += BULK_IMPORT_LOOKUP_CHUNK) {
-        const chunk = ids.slice(index, index + BULK_IMPORT_LOOKUP_CHUNK);
-        const placeholders = chunk.map(() => "?").join(",");
-        const rows = await env.DB.prepare(`SELECT id, nickname, custom_display_name, line_display_name
-            FROM customers WHERE id IN (${placeholders})`).bind(...chunk).all();
-        for (const row of rows.results) found.set(String(row.id), row);
+// 一次撈回名冊快照：配號要用全部 id，已存在判斷要用 custom_display_name。
+async function loadCustomerIndex(env) {
+    const rows = await env.DB.prepare(`SELECT id, nickname, custom_display_name, line_display_name
+        FROM customers LIMIT ${BULK_IMPORT_SCAN_LIMIT}`).all();
+    return Array.isArray(rows.results) ? rows.results : [];
+}
+
+// 「已存在」＝有客戶的 custom_display_name 以 `<編號>-` 開頭（例：005-小葉娃 對上編號 005）。
+// 編號不是 id，所以不能用 id 比對；找不到前綴時再退回比 existingId（前端預覽算出來的）。
+function findCustomerByCode(customers, code, existingId) {
+    for (const row of customers) {
+        if (CustomerPasteParse.matchesCustomerCode(row.custom_display_name, code)) return row;
     }
-    return found;
+    if (existingId) {
+        for (const row of customers) {
+            if (String(row.id) === existingId) return row;
+        }
+    }
+    return null;
 }
 
 // 略過既有客戶時，回報「現有資料 vs 貼上資料」的差異，讓團主知道自己略過了什麼。
 function describeSkipDifference(existing, item) {
     const currentName = String(existing.custom_display_name || existing.nickname || "").trim();
     const currentLineName = String(existing.line_display_name || "").trim();
+    const nextName = CustomerPasteParse.buildCustomDisplayName(item.code, item.lineName);
     const diff = [];
-    if (currentName !== item.name) diff.push(`姓名「${currentName || "（空白）"}」→「${item.name}」`);
+    if (currentName !== nextName) diff.push(`名稱「${currentName || "（空白）"}」→「${nextName}」`);
     if (currentLineName !== item.lineName) diff.push(`LINE 名稱「${currentLineName || "（空白）"}」→「${item.lineName}」`);
-    return diff.length ? `客戶編號已存在，已略過（差異：${diff.join("；")}）` : "客戶編號已存在，資料相同，已略過";
+    return diff.length
+        ? `客戶編號已存在（${existing.id}），已略過（差異：${diff.join("；")}）`
+        : `客戶編號已存在（${existing.id}），資料相同，已略過`;
 }
 
 async function handleCustomerBulkImport(request, env) {
@@ -340,25 +376,27 @@ async function handleCustomerBulkImport(request, env) {
     if (payload.items.length > BULK_IMPORT_MAX_ITEMS) return json({ error: `一次最多匯入 ${BULK_IMPORT_MAX_ITEMS} 筆，請分批貼上` }, 400);
 
     // 第一輪：逐筆驗證，並在同一批資料內去重（同一個編號只處理第一筆，
-    // 否則同一個 batch 會撞到 PRIMARY KEY UNIQUE 而整批 rollback）。
+    // 否則同一批會配出兩個號、寫成兩位重複客戶）。
     const plans = [];
     const seen = new Set();
     for (const raw of payload.items) {
         const item = validateBulkImportItem(raw);
         if (item.error) {
-            const shownId = raw && typeof raw === "object" && raw.id !== undefined && raw.id !== null ? String(raw.id).trim().slice(0, 32) : "";
-            plans.push({ ok: false, id: shownId, action: "failed", note: item.error });
+            const shownCode = raw && typeof raw === "object" && raw.code !== undefined && raw.code !== null ? String(raw.code).trim().slice(0, 16) : "";
+            plans.push({ ok: false, code: shownCode, id: "", action: "failed", note: item.error });
             continue;
         }
-        if (seen.has(item.id)) {
-            plans.push({ ok: false, id: item.id, action: "skipped", note: "同一批資料中重複的客戶編號，只處理第一筆" });
+        if (seen.has(item.code)) {
+            plans.push({ ok: false, code: item.code, id: "", action: "skipped", note: "同一批資料中重複的客戶編號，只處理第一筆" });
             continue;
         }
-        seen.add(item.id);
+        seen.add(item.code);
         plans.push({ ok: true, item });
     }
 
-    const existing = await findExistingCustomerRows(env, [...seen]);
+    const customers = await loadCustomerIndex(env);
+    // 配號一律以資料庫現況為準（前端傳來的預覽號碼完全忽略），同一批連號往下發。
+    const allocateCustomerId = CustomerPasteParse.createCustomerIdAllocator(customers.map(row => row.id));
     const statements = [];
     const details = [];
     let created = 0;
@@ -369,31 +407,35 @@ async function handleCustomerBulkImport(request, env) {
     for (const plan of plans) {
         if (!plan.ok) {
             if (plan.action === "failed") failed += 1; else skipped += 1;
-            details.push({ id: plan.id, action: plan.action, note: plan.note });
+            details.push({ code: plan.code, id: plan.id, action: plan.action, note: plan.note });
             continue;
         }
         const item = plan.item;
-        const current = existing.get(item.id);
+        const displayName = CustomerPasteParse.buildCustomDisplayName(item.code, item.lineName);
+        const current = findCustomerByCode(customers, item.code, item.existingId);
         if (current) {
             if (item.mode !== "update") {
                 skipped += 1;
-                details.push({ id: item.id, action: "skipped", note: describeSkipDifference(current, item) });
+                details.push({ code: item.code, id: String(current.id), action: "skipped", note: describeSkipDifference(current, item) });
                 continue;
             }
-            // 只更新名稱三欄；line_user_id／pickup_type／address／profile_status 完全不碰。
+            // 只更新名稱三欄＋備註（本名）；line_user_id／pickup_type／address／profile_status 完全不碰。
             statements.push(env.DB.prepare(`UPDATE customers
-                SET custom_display_name = ?, line_display_name = ?, nickname = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?`).bind(item.name, item.lineName, item.name, item.id));
+                SET custom_display_name = ?, line_display_name = ?, nickname = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?`).bind(displayName, item.lineName, item.name, item.name, current.id));
             updated += 1;
-            details.push({ id: item.id, action: "updated", note: "已更新客戶姓名與 LINE 名稱" });
+            details.push({ code: item.code, id: String(current.id), action: "updated", note: `已更新 ${current.id} 的名稱與 LINE 名稱` });
             continue;
         }
+        const newId = allocateCustomerId();
         statements.push(env.DB.prepare(`INSERT INTO customers
-            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, NULL, NULL, NULL, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
-            .bind(item.id, item.name, item.name, item.lineName));
+            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, notes, profile_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NULL, NULL, NULL, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+            .bind(newId, item.name, displayName, item.lineName, item.name));
+        // 同一批後面的資料也要看得到剛配出去的號與名稱，否則貼兩次同編號會各配一個號。
+        customers.push({ id: newId, nickname: item.name, custom_display_name: displayName, line_display_name: item.lineName, notes: item.name });
         created += 1;
-        details.push({ id: item.id, action: "created", note: "已新增客戶" });
+        details.push({ code: item.code, id: newId, action: "created", note: `已新增客戶（配號 ${newId}）` });
     }
 
     if (statements.length) {
@@ -431,9 +473,10 @@ async function handleCustomerRoutes(request, env, url) {
         const customer = validateCustomerPayload(payload);
         if (customer.error) return json({ error: customer.error }, 400);
         const nameFlag = customer.nameProvided ? 1 : 0;
+        const notesFlag = customer.notesProvided ? 1 : 0;
         await env.DB.prepare(`INSERT INTO customers
-            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
-            VALUES (?, ?, ?, NULL, NULL, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, notes, profile_status, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, NULL, ?, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 custom_display_name = CASE WHEN ? = 1 THEN excluded.custom_display_name ELSE customers.custom_display_name END,
                 nickname = COALESCE(
@@ -443,12 +486,15 @@ async function handleCustomerRoutes(request, env, url) {
                     excluded.nickname),
                 pickup_type = COALESCE(excluded.pickup_type, customers.pickup_type),
                 address = COALESCE(excluded.address, customers.address),
+                -- 備註有帶就照帶的值寫（空字串＝清空）；沒帶就完全不動，避免部分更新把備註洗掉。
+                notes = CASE WHEN ? = 1 THEN excluded.notes ELSE customers.notes END,
                 -- LINE 自動建立的暫存客戶（LINE-xxxx + pending）要保留 pending，
                 -- 否則之後在收件匣「綁定客戶」會被判成重複綁定而永久卡在 409。
                 profile_status = CASE WHEN customers.profile_status = 'pending' AND customers.id LIKE 'LINE-%'
                     THEN customers.profile_status ELSE 'complete' END,
                 updated_at = CURRENT_TIMESTAMP`)
-            .bind(id, customer.customName || id, customer.customName, customer.pickupType, customer.address, nameFlag, nameFlag).run();
+            .bind(id, customer.customName || id, customer.customName, customer.pickupType, customer.address, customer.notes,
+                nameFlag, nameFlag, notesFlag).run();
         const row = await env.DB.prepare(`${customerSelectSql()} WHERE id = ? LIMIT 1`).bind(id).first();
         return json({ id, updated: true, customer: row });
     }

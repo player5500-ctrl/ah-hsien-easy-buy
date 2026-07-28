@@ -1,8 +1,20 @@
-// 客戶「快速貼上匯入」解析規則驗收。
-// 重點：客戶編號永遠是字串（"001" ≠ 1），前導零不可掉。
+// 客戶「快速貼上匯入」解析規則＋客戶編號配號驗收。
+// 重點：貼上的編號永遠是字串（"001" ≠ 1）、前導零不可掉；
+//       客戶編號（customers.id）是系統自動配的 A00N，不是貼上的那三碼。
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { parseCustomerPaste, padCustomerCode, STATUS } = require("./customer-paste-parse.js");
+const {
+    parseCustomerPaste,
+    padCustomerCode,
+    STATUS,
+    customerIdSequence,
+    formatCustomerId,
+    maxCustomerIdSequence,
+    nextCustomerId,
+    createCustomerIdAllocator,
+    buildCustomDisplayName,
+    matchesCustomerCode
+} = require("./customer-paste-parse.js");
 
 function parseOne(line) {
     const { rows } = parseCustomerPaste(line);
@@ -130,4 +142,68 @@ test("案例十三：CRLF／CR 換行都要切得開，空字串回空陣列", (
     assert.deepEqual(parseCustomerPaste("").rows, []);
     assert.deepEqual(parseCustomerPaste(null).rows, []);
     assert.equal(parseCustomerPaste("001號甲-甲\r002號乙-乙").rows.length, 2);
+});
+
+// ==========================================================================
+// 客戶編號配號（customers.id = A00N）
+// ==========================================================================
+test("配號一：接續現有最大 A###，A007 之後是 A008", () => {
+    assert.equal(nextCustomerId(["A001", "A002", "A003", "A004", "A005", "A006", "A007"]), "A008");
+    assert.equal(maxCustomerIdSequence(["A001", "A007", "A003"]), 7);
+    assert.equal(customerIdSequence("A007"), 7);
+    assert.equal(formatCustomerId(8), "A008");
+    assert.equal(typeof nextCustomerId(["A007"]), "string");
+});
+
+test("配號二：完全沒有 A### 時從 A001 開始", () => {
+    assert.equal(nextCustomerId([]), "A001");
+    assert.equal(nextCustomerId(null), "A001");
+    // LINE 自動建立的暫存客戶與純三碼舊資料都不算 A### 系列
+    assert.equal(nextCustomerId(["LINE-9f2a", "001", "B003", "a001", ""]), "A001");
+    assert.equal(customerIdSequence("LINE-9f2a"), 0);
+    assert.equal(customerIdSequence(null), 0);
+});
+
+test("配號三：同一批要連號（A008 → A009 → A010）", () => {
+    const allocate = createCustomerIdAllocator(["A001", "A007", "LINE-abc"]);
+    assert.deepEqual([allocate(), allocate(), allocate()], ["A008", "A009", "A010"]);
+});
+
+test("配號四：不可撞到既有 id（同一批也要記住剛配出去的號）", () => {
+    const allocate = createCustomerIdAllocator(["A001", "A002", "A004"]);
+    assert.equal(allocate(), "A005", "取最大號＋1，不回頭補洞");
+    assert.equal(allocate(), "A006");
+});
+
+test("配號五：破百之後不可用字典序比大小（A1000 > A999）", () => {
+    assert.equal(nextCustomerId(["A099", "A100"]), "A101");
+    assert.equal(nextCustomerId(["A999"]), "A1000");
+    assert.equal(maxCustomerIdSequence(["A999", "A1000"]), 1000);
+    assert.equal(formatCustomerId(1000), "A1000", "超過 3 碼就不補零，也不可截斷");
+});
+
+// ==========================================================================
+// 顯示名稱＝`<編號>-<LINE暱稱>`，與「編號已存在」判斷
+// ==========================================================================
+test("顯示名稱一：`<編號>-<LINE暱稱>`，前導零不可掉", () => {
+    assert.equal(buildCustomDisplayName("005", "小葉娃"), "005-小葉娃");
+    assert.equal(buildCustomDisplayName("001", "蔡清景"), "001-蔡清景");
+    assert.notEqual(buildCustomDisplayName("001", "蔡清景"), "1-蔡清景");
+    // 空白會清乾淨（含全形空白）
+    assert.equal(buildCustomDisplayName(" 002 ", "　鄭雅蘭　"), "002-鄭雅蘭");
+    // LINE 暱稱空白時只留編號，不留孤單的短橫線
+    assert.equal(buildCustomDisplayName("003", ""), "003");
+    assert.equal(buildCustomDisplayName("", "小葉娃"), "小葉娃");
+});
+
+test("顯示名稱二：已存在判斷看 `<編號>-` 前綴，不是看 id", () => {
+    assert.equal(matchesCustomerCode("005-小葉娃", "005"), true);
+    assert.equal(matchesCustomerCode("005-改過的暱稱", "005"), true, "暱稱改了仍算同一個編號");
+    assert.equal(matchesCustomerCode("005", "005"), true, "只有編號沒有暱稱也算");
+    assert.equal(matchesCustomerCode("0051-小葉娃", "005"), false, "不可把 0051 誤判成 005");
+    assert.equal(matchesCustomerCode("005小葉娃", "005"), false, "沒有短橫線不算");
+    assert.equal(matchesCustomerCode("1-蔡清景", "001"), false, "掉前導零就是另一個編號");
+    assert.equal(matchesCustomerCode("", "005"), false);
+    assert.equal(matchesCustomerCode(null, "005"), false);
+    assert.equal(matchesCustomerCode("005-小葉娃", ""), false);
 });

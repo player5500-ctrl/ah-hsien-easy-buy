@@ -1415,11 +1415,13 @@ async function syncCustomersFromCloud() {
             customDisplayName: row.custom_display_name || local.customDisplayName || null,
             lineDisplayName: row.line_display_name || local.lineDisplayName || '',
             lineUserId: row.line_user_id || local.lineUserId || '',
-            // 電話與備註只存在本機，雲端沒有這兩個欄位，保留本機值
+            // 電話只存在本機，雲端沒有這個欄位，保留本機值
             address: local.address || row.address || '',
             pickupType: local.pickupType || row.pickup_type || '',
             phone: local.phone || '',
-            notes: local.notes || (row.profile_status === 'pending' ? 'LINE 自動建立，請補齊電話與地址' : '')
+            // 備註（本名）migration-008 之後存在雲端：有雲端值就用雲端值（跨裝置的真相來源），
+            // 雲端還沒有值（舊資料 NULL／PUT 尚未成功）才保留本機值，不可讓同步把本機備註洗成空白。
+            notes: row.notes || local.notes || (row.profile_status === 'pending' ? 'LINE 自動建立，請補齊電話與地址' : '')
         };
         merged.nickname = CustomerName.mirrorNickname(merged, row.id);
         if (idx > -1) state.customers[idx] = merged; else state.customers.push(merged);
@@ -1830,7 +1832,9 @@ function openCustomerModal(id = '') {
             renderCustomerLineNameHint(c);
             document.getElementById('cust-phone').value = c.phone;
             document.getElementById('cust-address').value = c.address;
-            document.getElementById('cust-notes').value = c.notes;
+            // migration-008 之前建立的客戶雲端 notes 是 NULL，同步下來可能沒有這個欄位 → 一律回退空字串，
+            // 否則欄位會顯示字面上的「undefined」，一按存檔就把它當成備註存回雲端。
+            document.getElementById('cust-notes').value = c.notes || '';
         }
     } else {
         title.textContent = "新增客戶";
@@ -1922,14 +1926,17 @@ function saveCustomer() {
     });
 }
 
-// 把團主設定的客戶名稱／取貨方式／地址寫回 D1（不送 line_user_id 與 LINE 原始名稱）
+// 把團主設定的客戶名稱／取貨方式／地址／備註寫回 D1（不送 line_user_id 與 LINE 原始名稱）
 async function syncCustomerToCloud(c) {
     return cloudFetch(`/api/customers/${encodeURIComponent(c.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         // 只送團主真正管理的欄位；地址留空時完全不帶，避免清掉客人在 LIFF 自己填的外送地址。
+        // 備註（本名）相反：一律帶（含空字串），因為那是團主自己的筆記，清空也要同步清空，
+        // 且只有送上雲端才能跨裝置看到（migration-008）。
         body: JSON.stringify({
             custom_display_name: c.customDisplayName || '',
+            notes: String(c.notes || '').trim(),
             ...(String(c.address || '').trim() ? { address: String(c.address).trim() } : {}),
             ...(c.pickupType ? { pickup_type: c.pickupType } : {})
         })
@@ -1938,9 +1945,17 @@ async function syncCustomerToCloud(c) {
 
 // ==========================================================================
 // 客戶「快速貼上匯入」
-// 解析規則集中在 customer-paste-parse.js（前端與 node 測試共用同一份）。
-// ⚠️ 客戶編號一律當字串處理（"001" 不是 1），任何地方都不可 Number()。
-// ⚠️ 只寫名稱三欄；電話／地址／備註／LINE 綁定一律不動。
+// 解析規則與配號規則集中在 customer-paste-parse.js（前端／Worker／node 測試共用同一份）。
+//
+// 欄位對應照 Vanny 手動建檔的既有慣例（貼上的三碼編號不是客戶編號）：
+//   id                  = 系統自動配號 A001／A002…（真正的號由 Worker 配發）
+//   customDisplayName   = `<編號>-<LINE暱稱>`，例：005-小葉娃
+//   lineDisplayName     = LINE 暱稱
+//   nickname / notes    = 本名（notes 自 migration-008 起也存雲端 D1，換裝置看得到）
+//   phone / address     = 留空，不覆蓋客人自己填的資料
+//
+// ⚠️ 貼上的編號一律當字串處理（"001" 不是 1），任何地方都不可 Number()。
+// ⚠️ 只寫名稱三欄＋備註；電話／地址／LINE 綁定一律不動。
 // ==========================================================================
 const customerPasteState = { rows: [], submitting: false };
 
@@ -1987,23 +2002,42 @@ function clearCustomerPasteInput() {
 
 // 「已存在」判斷同時看本機 state.customers 與雲端 D1 最新名冊，
 // 只看本機會漏掉 LINE 自動建立、還沒同步下來的客戶，導致預覽說可新增、實際被略過。
-async function loadKnownCustomerNames() {
-    const known = new Map();
+// 回傳的是「名冊快照陣列」而不是 id → 資料的 Map：
+// 貼上的三碼編號不是 customers.id，比對要看 custom_display_name 的 `<編號>-` 前綴。
+async function loadCustomerImportIndex() {
+    const byId = new Map();
     state.customers.forEach(c => {
         if (!c || !c.id) return;
-        known.set(String(c.id), { name: customerDisplayName(c), lineName: String(c.lineDisplayName || '') });
+        byId.set(String(c.id), {
+            id: String(c.id),
+            customDisplayName: String(c.customDisplayName || ''),
+            displayName: customerDisplayName(c),
+            lineName: String(c.lineDisplayName || '')
+        });
     });
     const result = await cloudFetch('/api/customers');
     if (result && result.data && Array.isArray(result.data)) {
         result.data.forEach(row => {
             if (!row || !row.id) return;
-            known.set(String(row.id), {
-                name: CustomerName.resolveDisplayName(row),
+            byId.set(String(row.id), {
+                id: String(row.id),
+                customDisplayName: String(row.custom_display_name || ''),
+                displayName: CustomerName.resolveDisplayName(row),
                 lineName: String(row.line_display_name || '')
             });
         });
     }
-    return { known, cloudError: result && result.error ? result.error : '', cloudSkipped: Boolean(result && result.skipped) };
+    return {
+        customers: [...byId.values()],
+        cloudError: result && result.error ? result.error : '',
+        cloudSkipped: Boolean(result && result.skipped)
+    };
+}
+
+// 從名冊快照裡找「編號已存在」的那一筆（比 custom_display_name 前綴，不比 id）。
+function findCustomerByPasteCode(customers, code) {
+    if (!code) return null;
+    return customers.find(c => CustomerPasteParse.matchesCustomerCode(c.customDisplayName, code)) || null;
 }
 
 async function parseCustomerPasteInput() {
@@ -2018,19 +2052,24 @@ async function parseCustomerPasteInput() {
         return;
     }
     if (parseBtn) parseBtn.disabled = true;
-    let lookup = { known: new Map(), cloudError: '', cloudSkipped: true };
+    let lookup = { customers: [], cloudError: '', cloudSkipped: true };
     try {
-        lookup = await loadKnownCustomerNames();
+        lookup = await loadCustomerImportIndex();
     } finally {
         if (parseBtn) parseBtn.disabled = false;
     }
+    // 預覽用的配號：真正的號碼由 Worker 端重算（避免兩個分頁同時匯入撞號），
+    // 這裡只是讓團主先看到「大概會配到 A008 起」。
+    const allocatePreviewId = CustomerPasteParse.createCustomerIdAllocator(lookup.customers.map(c => c.id));
     customerPasteState.rows = parsed.rows.map(row => {
-        const current = row.status === 'ok' ? lookup.known.get(row.code) : null;
+        const current = row.status === 'ok' ? findCustomerByPasteCode(lookup.customers, row.code) : null;
         return {
             ...row,
             exists: Boolean(current),
-            currentName: current ? current.name : '',
+            existingId: current ? current.id : '',
+            currentName: current ? current.displayName : '',
             currentLineName: current ? current.lineName : '',
+            previewId: row.status === 'ok' && !current ? allocatePreviewId() : '',
             mode: 'skip' // 已存在的客戶預設略過，避免誤覆蓋團主已設定好的名稱
         };
     });
@@ -2067,9 +2106,14 @@ function renderCustomerPastePreview(lookup) {
         } else {
             action = '<select class="form-control" disabled><option>不匯入</option></select>';
         }
-        const hint = statusKey === 'exists' && row.currentName && row.currentName !== row.name
-            ? `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">目前：${escapeHtml(row.currentName)}</div>`
-            : '';
+        // 小字補充：新增列顯示「即將配到的內部編號＋顯示名稱」，已存在列顯示目前資料與它的內部編號。
+        let hint = '';
+        if (statusKey === 'ok') {
+            const targetName = CustomerPasteParse.buildCustomDisplayName(row.code, row.lineName);
+            hint = `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">將顯示為 ${escapeHtml(targetName)}${row.previewId ? `（配號 ${escapeHtml(row.previewId)}）` : ''}</div>`;
+        } else if (statusKey === 'exists' && (row.currentName || row.existingId)) {
+            hint = `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">目前：${escapeHtml(row.currentName || '（無名稱）')}${row.existingId ? `（${escapeHtml(row.existingId)}）` : ''}</div>`;
+        }
         html += `
             <tr>
                 <td class="paste-code">${escapeHtml(row.code) || '<span style="color:var(--text-muted);">—</span>'}</td>
@@ -2087,7 +2131,12 @@ function renderCustomerPastePreview(lookup) {
         const cloudNote = lookup && lookup.cloudSkipped
             ? '<br><b>提醒：</b>尚未設定雲端管理金鑰，「已存在」只比對到本機資料，且無法送出匯入。'
             : (lookup && lookup.cloudError ? `<br><b>提醒：</b>讀取雲端客戶名冊失敗（${escapeHtml(lookup.cloudError)}），「已存在」只比對到本機資料。` : '');
-        summary.innerHTML = `共解析 ${rows.length} 筆：可新增 ${counts.addable} 筆／已存在 ${counts.exists} 筆／有問題 ${counts.error} 筆。${cloudNote}`;
+        // 貼上的編號只是顯示名稱前綴，內部客戶編號由系統自動配號，這裡先讓團主看到起號。
+        const firstNewId = rows.find(row => row.previewId);
+        const assignNote = counts.addable && firstNewId
+            ? `<br><span style="font-size:12px;">系統將自動配號 ${escapeHtml(firstNewId.previewId)}…（實際號碼以雲端配發為準）。</span>`
+            : '';
+        summary.innerHTML = `共解析 ${rows.length} 筆：可新增 ${counts.addable} 筆／已存在 ${counts.exists} 筆／有問題 ${counts.error} 筆。${assignNote}${cloudNote}`;
         summary.style.display = 'block';
     }
     if (importBtn) importBtn.disabled = !(counts.addable + counts.exists);
@@ -2100,28 +2149,32 @@ function setCustomerPasteRowMode(index, mode) {
 }
 
 // 依匯入結果就地更新本機 state.customers（不重新整理頁面）；
-// 電話／地址／備註／LINE 綁定一律保留本機既有值。
+// 真正的客戶編號（A00N）由 Worker 配發，一律以回傳的 detail.id 為準，不用前端預覽號。
+// 欄位對應：custom_display_name = `<編號>-<LINE暱稱>`、line_display_name = LINE暱稱、
+//           nickname / notes = 本名（Worker 也已把 notes 寫進 D1，這裡只是就地反映同一個值）；
+//           電話／地址／LINE 綁定保留本機既有值。
 function applyCustomerImportToState(data, items) {
-    const byId = new Map(items.map(item => [String(item.id), item]));
+    const byCode = new Map(items.map(item => [String(item.code), item]));
     const details = Array.isArray(data && data.details) ? data.details : [];
     let changed = 0;
     details.forEach(detail => {
         if (!detail || (detail.action !== 'created' && detail.action !== 'updated')) return;
-        const item = byId.get(String(detail.id));
-        if (!item) return;
-        const idx = state.customers.findIndex(c => c.id === item.id);
+        const item = byCode.get(String(detail.code));
+        const id = String(detail.id || '');
+        if (!item || !id) return;
+        const idx = state.customers.findIndex(c => String(c.id) === id);
         const local = idx > -1 ? state.customers[idx] : {};
         const record = {
             ...local,
-            id: item.id,
-            customDisplayName: item.name,
+            id,
+            customDisplayName: CustomerPasteParse.buildCustomDisplayName(item.code, item.lineName),
             lineDisplayName: item.lineName || local.lineDisplayName || '',
+            nickname: item.name,
             lineUserId: local.lineUserId || '',
             phone: local.phone || '',
             address: local.address || '',
-            notes: local.notes || ''
+            notes: item.name
         };
-        record.nickname = CustomerName.mirrorNickname(record, item.id);
         if (idx > -1) state.customers[idx] = record; else state.customers.push(record);
         changed += 1;
     });
@@ -2134,14 +2187,19 @@ function renderCustomerPasteResult(data) {
     const details = Array.isArray(data.details) ? data.details : [];
     const problems = details.filter(d => d && (d.action === 'failed' || d.action === 'skipped'));
     const listHtml = problems.length
-        ? `<ul>${problems.slice(0, 50).map(d => `<li>${escapeHtml(d.id || '（無編號）')}：${escapeHtml(d.note || '')}</li>`).join('')}${problems.length > 50 ? '<li>…</li>' : ''}</ul>`
+        ? `<ul>${problems.slice(0, 50).map(d => `<li>${escapeHtml(d.code || '（無編號）')}：${escapeHtml(d.note || '')}</li>`).join('')}${problems.length > 50 ? '<li>…</li>' : ''}</ul>`
+        : '';
+    // 實際配到的客戶編號要讓團主看到，之後在客戶管理才找得到人。
+    const createdIds = details.filter(d => d && d.action === 'created' && d.id).map(d => String(d.id));
+    const createdNote = createdIds.length
+        ? `<br><span style="font-size:12px;">本次配號：${escapeHtml(createdIds.slice(0, 20).join('、'))}${createdIds.length > 20 ? ' …' : ''}</span>`
         : '';
     box.innerHTML = `<div class="paste-import-result">
         <b>匯入完成</b><br>
         成功新增：${Number(data.created) || 0} 筆<br>
         更新資料：${Number(data.updated) || 0} 筆<br>
         略過資料：${Number(data.skipped) || 0} 筆<br>
-        錯誤資料：${Number(data.failed) || 0} 筆
+        錯誤資料：${Number(data.failed) || 0} 筆${createdNote}
         ${listHtml}
     </div>`;
     box.style.display = 'block';
@@ -2150,9 +2208,16 @@ function renderCustomerPasteResult(data) {
 async function confirmCustomerPasteImport() {
     const importBtn = document.getElementById('customer-paste-import-btn');
     if (customerPasteState.submitting) return;
+    // 送出的是「貼上的編號」而不是 id：真正的客戶編號（A00N）由 Worker 端配發。
     const items = customerPasteState.rows
         .filter(row => row.status === 'ok')
-        .map(row => ({ id: row.code, name: row.name, lineName: row.lineName, mode: row.exists ? row.mode : 'skip' }));
+        .map(row => ({
+            code: row.code,
+            name: row.name,
+            lineName: row.lineName,
+            mode: row.exists ? row.mode : 'skip',
+            existingId: row.existingId || ''
+        }));
     if (!items.length) {
         alert('沒有可匯入的資料，請先按「解析資料」。');
         return;
@@ -2192,10 +2257,22 @@ async function confirmCustomerPasteImport() {
         renderCustomers();
         if (currentViewId === 'dashboard') renderDashboard();
         // 剛匯入的客戶現在都已存在，重算預覽狀態避免團主重複按
-        const knownIds = new Set(state.customers.map(c => String(c.id)));
+        // （比對條件與伺服器一致：custom_display_name 的 `<編號>-` 前綴，不是 id）
+        const known = state.customers.map(c => ({
+            id: String(c.id),
+            customDisplayName: String(c.customDisplayName || ''),
+            displayName: customerDisplayName(c),
+            lineName: String(c.lineDisplayName || '')
+        }));
         customerPasteState.rows.forEach(row => {
             if (row.status !== 'ok' || row.exists) return;
-            if (knownIds.has(row.code)) { row.exists = true; row.currentName = row.name; row.currentLineName = row.lineName; }
+            const current = findCustomerByPasteCode(known, row.code);
+            if (!current) return;
+            row.exists = true;
+            row.existingId = current.id;
+            row.currentName = current.displayName;
+            row.currentLineName = current.lineName;
+            row.previewId = '';
         });
         const resultBox = document.getElementById('customer-paste-result');
         const savedResultHtml = resultBox ? resultBox.innerHTML : '';

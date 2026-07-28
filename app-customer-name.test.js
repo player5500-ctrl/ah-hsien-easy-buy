@@ -218,3 +218,60 @@ test("客戶管理必須看得到雲端客戶（含 LINE 自動建立的），�
     assert.equal(app.customerDisplayName(ming), "陳小明");
     assert.equal(ming.address, "台北市");
 });
+
+// --- migration-008：備註（本名）要跨裝置 round-trip（本機 → 雲端 → 本機） ---
+
+test("migration-008：存檔時備註要 PUT 上雲端（含清空），否則換裝置就消失", () => {
+    const app = loadApp({
+        fields: customerFields({ "cust-nickname": "024-蜜茶", "cust-notes": "本名：陳蜜茶，外送放管理室" }),
+        respond: () => ({ id: "LINE-316ca0ef", updated: true })
+    });
+    app.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    app.setCustomers([{ id: "LINE-316ca0ef", customDisplayName: "024-蜜茶", lineDisplayName: "蜜茶", nickname: "024-蜜茶", phone: "", address: "", notes: "" }]);
+
+    app.saveCustomer();
+
+    const saved = JSON.parse(app.localStorage.getItem("easygo_customers"));
+    assert.equal(saved[0].notes, "本名：陳蜜茶，外送放管理室", "本機也要存");
+    const put = app.requests.find(r => r.method === "PUT");
+    assert.ok(put, "必須 PUT 到雲端");
+    assert.equal(put.body.notes, "本名：陳蜜茶，外送放管理室", "備註必須送上雲端");
+
+    // 清空備註同樣要上傳（空字串＝真的要清），否則雲端會一直留著舊備註蓋回本機
+    const cleared = loadApp({
+        fields: customerFields({ "cust-nickname": "024-蜜茶", "cust-notes": "" }),
+        respond: () => ({ id: "LINE-316ca0ef", updated: true })
+    });
+    cleared.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    cleared.setCustomers([{ id: "LINE-316ca0ef", customDisplayName: "024-蜜茶", lineDisplayName: "蜜茶", nickname: "024-蜜茶", phone: "", address: "", notes: "舊備註" }]);
+    cleared.saveCustomer();
+    const clearedPut = cleared.requests.find(r => r.method === "PUT");
+    assert.equal(clearedPut.body.notes, "", "清空要明確送空字串");
+    assert.equal(JSON.parse(cleared.localStorage.getItem("easygo_customers"))[0].notes, "");
+});
+
+test("migration-008：雲端有備註就用雲端值（跨裝置），雲端沒有才保留本機值", async () => {
+    const app = loadApp({
+        respond: () => ([
+            { id: "A001", custom_display_name: "001-蔡清景", line_display_name: "蔡清景", line_user_id: null, address: null, pickup_type: null, notes: "雲端備註（另一台存的）", profile_status: "complete" },
+            { id: "A002", custom_display_name: "002-鄭雅蘭", line_display_name: "鄭雅蘭", line_user_id: null, address: null, pickup_type: null, notes: null, profile_status: "complete" }
+        ])
+    });
+    app.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    app.setCustomers([
+        { id: "A001", customDisplayName: "001-蔡清景", lineDisplayName: "蔡清景", nickname: "001-蔡清景", phone: "0912", address: "", notes: "" },
+        { id: "A002", customDisplayName: "002-鄭雅蘭", lineDisplayName: "鄭雅蘭", nickname: "002-鄭雅蘭", phone: "", address: "", notes: "本機備註還沒同步上去" }
+    ]);
+    await app.syncCustomersFromCloud();
+    const saved = JSON.parse(app.localStorage.getItem("easygo_customers"));
+    assert.equal(saved.find(c => c.id === "A001").notes, "雲端備註（另一台存的）", "雲端有值＝跨裝置真相來源");
+    assert.equal(saved.find(c => c.id === "A002").notes, "本機備註還沒同步上去", "雲端 NULL 不可把本機備註洗掉");
+    assert.equal(saved.find(c => c.id === "A001").phone, "0912", "電話仍只存在本機");
+});
+
+test("migration-008：舊客戶沒有 notes 欄位時，編輯視窗備註要留空而不是 undefined", () => {
+    const app = loadApp({ fields: customerFields({}) });
+    app.setCustomers([{ id: "A001", customDisplayName: "001-陳小明", lineDisplayName: "", nickname: "001-陳小明", phone: "", address: "" }]);
+    app.openCustomerModal("A001");
+    assert.equal(app.fields["cust-notes"], "", "不可顯示字面上的 undefined");
+});

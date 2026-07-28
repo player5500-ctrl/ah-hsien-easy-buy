@@ -3,6 +3,8 @@ PRAGMA foreign_keys = ON;
 -- nickname 為 legacy 欄位，由程式維護為「目前應顯示的名稱」鏡射值（見 customer-name.js mirrorNickname）。
 -- 實際名稱來源：custom_display_name（團主自訂，LINE 事件不得覆蓋）> line_display_name（LINE 原始名稱）。
 -- 客戶編號沿用 id（例：A001／024），不另設 customer_code 欄位。
+-- notes = 團主自己記的備註／本名（快速貼上匯入寫入本名），存雲端才能跨裝置看到（見 migration-008）。
+-- 欄位順序刻意與 migration-008 ALTER TABLE 後的實際順序一致（notes 排在最後）。
 CREATE TABLE IF NOT EXISTS customers (
   id TEXT PRIMARY KEY,
   nickname TEXT NOT NULL,
@@ -13,7 +15,8 @@ CREATE TABLE IF NOT EXISTS customers (
   address TEXT,
   profile_status TEXT NOT NULL DEFAULT 'complete',
   created_at TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  notes TEXT
 );
 
 CREATE TABLE IF NOT EXISTS products (

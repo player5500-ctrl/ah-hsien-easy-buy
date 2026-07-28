@@ -63,6 +63,7 @@ function loadApp(options = {}) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), context, { filename: "app.js" });
     // app.js 的 state 是 let（詞法宣告，不會掛在 sandbox 上），要透過 runInContext 存取。
     sandbox.setCustomers = list => vm.runInContext(`state.customers = ${JSON.stringify(list)};`, context);
+    sandbox.setOrders = list => vm.runInContext(`state.orders = ${JSON.stringify(list)};`, context);
     return sandbox;
 }
 
@@ -217,6 +218,48 @@ test("客戶管理必須看得到雲端客戶（含 LINE 自動建立的），�
     const ming = saved.find(c => c.id === "A001");
     assert.equal(app.customerDisplayName(ming), "陳小明");
     assert.equal(ming.address, "台北市");
+});
+
+test("雲端已刪除的 LINE 暫存客戶：只剩已取消零元空訂單時要清掉本機殘影", async () => {
+    const app = loadApp({
+        respond: () => ([
+            { id: "A001", custom_display_name: "蜜茶", line_display_name: null, profile_status: "complete" }
+        ])
+    });
+    app.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    app.setCustomers([
+        { id: "LINE-stale", nickname: "蜜茶" },
+        { id: "A001", nickname: "蜜茶" }
+    ]);
+    app.setOrders([
+        { id: "ORD-cancelled-1", customerId: "LINE-stale", orderStatus: "已取消", totalAmount: 0, items: [] },
+        { id: "ORD-cancelled-2", customerId: "LINE-stale", orderStatus: "已取消", totalAmount: 0, items: [] },
+        { id: "ORD-valid", customerId: "A001", orderStatus: "新訂單", totalAmount: 140, items: [{ productId: "P001", qty: 1 }] }
+    ]);
+
+    await app.syncCustomersFromCloud();
+
+    const customers = JSON.parse(app.localStorage.getItem("easygo_customers"));
+    const orders = JSON.parse(app.localStorage.getItem("easygo_orders"));
+    assert.deepEqual(customers.map(customer => customer.id), ["A001"]);
+    assert.deepEqual(orders.map(order => order.id), ["ORD-valid"]);
+});
+
+test("雲端缺少客戶但仍有有效交易時不得清除本機資料", async () => {
+    const app = loadApp({ respond: () => ([]) });
+    app.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    app.setCustomers([{ id: "LINE-active", nickname: "正常客戶" }]);
+    app.setOrders([
+        { id: "ORD-active", customerId: "LINE-active", orderStatus: "新訂單", totalAmount: 200, items: [{ productId: "P001", qty: 1 }] }
+    ]);
+    app.saveStateToStorage();
+
+    await app.syncCustomersFromCloud();
+
+    const customers = JSON.parse(app.localStorage.getItem("easygo_customers"));
+    const orders = JSON.parse(app.localStorage.getItem("easygo_orders"));
+    assert.deepEqual(customers.map(customer => customer.id), ["LINE-active"]);
+    assert.deepEqual(orders.map(order => order.id), ["ORD-active"]);
 });
 
 // --- migration-008：備註（本名）要跨裝置 round-trip（本機 → 雲端 → 本機） ---

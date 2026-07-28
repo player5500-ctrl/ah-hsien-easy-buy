@@ -1401,6 +1401,7 @@ async function syncCustomersFromCloud() {
     if (result.error || result.skipped) return result;
     const rows = Array.isArray(result.data) ? result.data : [];
     let changed = 0;
+    const cloudCustomerIds = new Set(rows.filter(row => row && row.id).map(row => row.id));
     rows.forEach(row => {
         if (!row || !row.id) return;
         const idx = state.customers.findIndex(c => c.id === row.id);
@@ -1427,6 +1428,30 @@ async function syncCustomersFromCloud() {
         if (idx > -1) state.customers[idx] = merged; else state.customers.push(merged);
         changed += 1;
     });
+
+    // 雲端已刪除的 LINE 暫存客戶，若本機只剩「已取消、0 元、無品項」訂單，
+    // 代表沒有交易內容需要保留；一併清掉 LocalStorage 殘影。
+    // 只處理 LINE- 編號且採嚴格條件，避免誤刪離線建立的正式客戶或有效訂單。
+    const removableCustomerIds = new Set(state.customers
+        .filter(customer => {
+            if (!customer || !/^LINE-/i.test(customer.id) || cloudCustomerIds.has(customer.id)) return false;
+            const relatedOrders = state.orders.filter(order => order.customerId === customer.id);
+            return relatedOrders.every(order =>
+                order.orderStatus === '已取消'
+                && Number(order.totalAmount || 0) === 0
+                && (!Array.isArray(order.items) || order.items.length === 0)
+            );
+        })
+        .map(customer => customer.id));
+
+    if (removableCustomerIds.size > 0) {
+        const customerCountBefore = state.customers.length;
+        const orderCountBefore = state.orders.length;
+        state.customers = state.customers.filter(customer => !removableCustomerIds.has(customer.id));
+        state.orders = state.orders.filter(order => !removableCustomerIds.has(order.customerId));
+        changed += (customerCountBefore - state.customers.length) + (orderCountBefore - state.orders.length);
+    }
+
     if (changed) saveStateToStorage();
     return { data: { synced: changed } };
 }

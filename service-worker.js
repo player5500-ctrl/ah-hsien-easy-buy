@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'ah-hsien-easy-buy-';
-const CACHE_NAME = `${CACHE_PREFIX}20260729-mobile-pwa-v2`;
+const CACHE_NAME = `${CACHE_PREFIX}20260729-webview-paint-v3`;
 const CORE_ASSETS = [
     './',
     './index.html',

@@ -172,3 +172,15 @@ test("LINE 內建瀏覽器不顯示無法使用的 PWA 安裝提示", () => {
     assert.equal(harness.elements.pwaInstallBanner.hidden, true);
     assert.equal(harness.classes.has("pwa-install-visible"), false);
 });
+
+test("Android WebView：隱藏 Modal 不建立全螢幕模糊合成層", () => {
+    assert.match(css, /\.modal-backdrop\s*\{[\s\S]*?backdrop-filter:\s*none;[\s\S]*?display:\s*none;[\s\S]*?visibility:\s*hidden;/);
+    assert.match(css, /\.modal-backdrop\.show\s*\{[\s\S]*?display:\s*flex;[\s\S]*?visibility:\s*visible;/);
+    assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*?\.modal-backdrop\.show\s*\{[\s\S]*?backdrop-filter:\s*none;/);
+});
+
+test("Android WebView：手機側欄與 Header 避免多餘的長駐合成層", () => {
+    assert.match(css, /@media \(max-width:\s*768px\)[\s\S]*?\.sidebar\s*\{[\s\S]*?bottom:\s*0;[\s\S]*?height:\s*auto;/);
+    assert.match(css, /\.sidebar-backdrop\s*\{[\s\S]*?transition:\s*none;/);
+    assert.match(css, /\.main-header\s*\{[\s\S]*?position:\s*relative;[\s\S]*?top:\s*auto;/);
+});

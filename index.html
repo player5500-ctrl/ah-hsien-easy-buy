@@ -467,7 +467,10 @@
                             <h1>客戶管理</h1>
                             <p class="page-subtitle">管理客戶暱稱、電話、地址與查看購買歷史</p>
                         </div>
-                        <button class="btn btn-primary" onclick="openCustomerModal()"><i class="fa-solid fa-plus"></i> 新增客戶</button>
+                        <div class="button-group" style="flex-wrap: wrap;">
+                            <button class="btn btn-secondary" onclick="openCustomerPasteModal()"><i class="fa-solid fa-paste"></i> 快速貼上匯入</button>
+                            <button class="btn btn-primary" onclick="openCustomerModal()"><i class="fa-solid fa-plus"></i> 新增客戶</button>
+                        </div>
                     </div>
 
                     <div class="filter-panel">
@@ -915,6 +918,51 @@
         </div>
     </div>
 
+    <!-- 3-1. 客戶快速貼上匯入 Modal -->
+    <div class="modal-backdrop" id="customer-paste-modal">
+        <div class="modal-container paste-import-container">
+            <div class="modal-header">
+                <h3 class="modal-title">快速貼上匯入客戶</h3>
+                <button class="modal-close" onclick="closeCustomerPasteModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom: 12px;">
+                    <label class="form-label" for="customer-paste-textarea">貼上客戶名單（一行一位）</label>
+                    <textarea class="form-control paste-import-textarea" id="customer-paste-textarea" rows="9"
+                        placeholder="001號蔡清景 - 蔡清景&#10;002號鄭雅蘭 - 鄭雅蘭&#10;004號陳美娟-陳美娟&#10;005號家玲-小葉娃&#10;006洪敏玲-洪敏玲"></textarea>
+                    <small style="display:block; margin-top:6px; font-size:12px; color:var(--text-muted); line-height:1.6;">
+                        格式：<b>客戶編號</b>（可加「號」字）＋<b>客戶姓名</b>＋短橫線＋<b>LINE 名稱</b>。<br>
+                        編號會自動補成 3 碼（1 → 001）；沒有短橫線時 LINE 名稱會沿用姓名；空白行自動略過。
+                    </small>
+                </div>
+                <div class="button-group" style="flex-wrap: wrap; margin-bottom: 12px;">
+                    <button class="btn btn-secondary" id="customer-paste-parse-btn" onclick="parseCustomerPasteInput()"><i class="fa-solid fa-list-check"></i> 解析資料</button>
+                    <button class="btn btn-secondary" onclick="clearCustomerPasteInput()"><i class="fa-solid fa-eraser"></i> 清空</button>
+                </div>
+                <div id="customer-paste-summary" class="alert alert-warning" style="display:none; margin-bottom:12px;"></div>
+                <div class="table-responsive paste-import-preview" id="customer-paste-preview-wrap" style="display:none;">
+                    <table class="table-custom paste-import-table">
+                        <thead>
+                            <tr>
+                                <th>客戶編號</th>
+                                <th>客戶姓名</th>
+                                <th>LINE名稱</th>
+                                <th>匯入狀態</th>
+                                <th>處理方式</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customer-paste-preview-tbody"></tbody>
+                    </table>
+                </div>
+                <div id="customer-paste-result" style="display:none; margin-top:12px;"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeCustomerPasteModal()">關閉</button>
+                <button class="btn btn-primary" id="customer-paste-import-btn" onclick="confirmCustomerPasteImport()" disabled><i class="fa-solid fa-file-import"></i> 確認匯入</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 4. 新增/編輯訂單 Modal -->
     <div class="modal-backdrop" id="order-modal">
         <div class="modal-container" style="max-width: 800px;">
@@ -1162,6 +1210,7 @@
     <script src="product-voice.js"></script>
     <script src="line-order.js"></script>
     <script src="customer-name.js"></script>
+    <script src="customer-paste-parse.js"></script>
     <script src="line-note.js"></script>
     <script src="app.js"></script>
 </body>

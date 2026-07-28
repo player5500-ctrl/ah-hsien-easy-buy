@@ -1936,6 +1936,280 @@ async function syncCustomerToCloud(c) {
     });
 }
 
+// ==========================================================================
+// 客戶「快速貼上匯入」
+// 解析規則集中在 customer-paste-parse.js（前端與 node 測試共用同一份）。
+// ⚠️ 客戶編號一律當字串處理（"001" 不是 1），任何地方都不可 Number()。
+// ⚠️ 只寫名稱三欄；電話／地址／備註／LINE 綁定一律不動。
+// ==========================================================================
+const customerPasteState = { rows: [], submitting: false };
+
+const CUSTOMER_PASTE_STATUS_LABEL = {
+    ok: '可新增',
+    exists: '客戶編號已存在',
+    invalid: '資料格式錯誤',
+    noname: '姓名空白'
+};
+
+function openCustomerPasteModal() {
+    customerPasteState.rows = [];
+    customerPasteState.submitting = false;
+    const textarea = document.getElementById('customer-paste-textarea');
+    if (textarea) textarea.value = '';
+    resetCustomerPastePreview();
+    document.getElementById('customer-paste-modal').classList.add('show');
+    if (textarea) setTimeout(() => textarea.focus(), 120);
+}
+
+function closeCustomerPasteModal() {
+    document.getElementById('customer-paste-modal').classList.remove('show');
+}
+
+function resetCustomerPastePreview() {
+    const summary = document.getElementById('customer-paste-summary');
+    const wrap = document.getElementById('customer-paste-preview-wrap');
+    const tbody = document.getElementById('customer-paste-preview-tbody');
+    const result = document.getElementById('customer-paste-result');
+    const importBtn = document.getElementById('customer-paste-import-btn');
+    if (summary) { summary.style.display = 'none'; summary.innerHTML = ''; }
+    if (wrap) wrap.style.display = 'none';
+    if (tbody) tbody.innerHTML = '';
+    if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+    if (importBtn) importBtn.disabled = true;
+}
+
+function clearCustomerPasteInput() {
+    const textarea = document.getElementById('customer-paste-textarea');
+    if (textarea) textarea.value = '';
+    customerPasteState.rows = [];
+    resetCustomerPastePreview();
+}
+
+// 「已存在」判斷同時看本機 state.customers 與雲端 D1 最新名冊，
+// 只看本機會漏掉 LINE 自動建立、還沒同步下來的客戶，導致預覽說可新增、實際被略過。
+async function loadKnownCustomerNames() {
+    const known = new Map();
+    state.customers.forEach(c => {
+        if (!c || !c.id) return;
+        known.set(String(c.id), { name: customerDisplayName(c), lineName: String(c.lineDisplayName || '') });
+    });
+    const result = await cloudFetch('/api/customers');
+    if (result && result.data && Array.isArray(result.data)) {
+        result.data.forEach(row => {
+            if (!row || !row.id) return;
+            known.set(String(row.id), {
+                name: CustomerName.resolveDisplayName(row),
+                lineName: String(row.line_display_name || '')
+            });
+        });
+    }
+    return { known, cloudError: result && result.error ? result.error : '', cloudSkipped: Boolean(result && result.skipped) };
+}
+
+async function parseCustomerPasteInput() {
+    const textarea = document.getElementById('customer-paste-textarea');
+    const parseBtn = document.getElementById('customer-paste-parse-btn');
+    const text = textarea ? textarea.value : '';
+    const parsed = CustomerPasteParse.parseCustomerPaste(text);
+    if (!parsed.rows.length) {
+        customerPasteState.rows = [];
+        resetCustomerPastePreview();
+        alert('沒有讀到任何資料，請先貼上客戶名單。');
+        return;
+    }
+    if (parseBtn) parseBtn.disabled = true;
+    let lookup = { known: new Map(), cloudError: '', cloudSkipped: true };
+    try {
+        lookup = await loadKnownCustomerNames();
+    } finally {
+        if (parseBtn) parseBtn.disabled = false;
+    }
+    customerPasteState.rows = parsed.rows.map(row => {
+        const current = row.status === 'ok' ? lookup.known.get(row.code) : null;
+        return {
+            ...row,
+            exists: Boolean(current),
+            currentName: current ? current.name : '',
+            currentLineName: current ? current.lineName : '',
+            mode: 'skip' // 已存在的客戶預設略過，避免誤覆蓋團主已設定好的名稱
+        };
+    });
+    renderCustomerPastePreview(lookup);
+}
+
+function renderCustomerPastePreview(lookup) {
+    const rows = customerPasteState.rows;
+    const summary = document.getElementById('customer-paste-summary');
+    const wrap = document.getElementById('customer-paste-preview-wrap');
+    const tbody = document.getElementById('customer-paste-preview-tbody');
+    const result = document.getElementById('customer-paste-result');
+    const importBtn = document.getElementById('customer-paste-import-btn');
+    if (result) { result.style.display = 'none'; result.innerHTML = ''; }
+
+    const counts = { addable: 0, exists: 0, error: 0 };
+    let html = '';
+    rows.forEach((row, index) => {
+        let statusKey = row.status;
+        if (row.status === 'ok' && row.exists) statusKey = 'exists';
+        if (statusKey === 'ok') counts.addable += 1;
+        else if (statusKey === 'exists') counts.exists += 1;
+        else counts.error += 1;
+
+        const statusClass = statusKey === 'ok' ? 'paste-status-ok' : (statusKey === 'exists' ? 'paste-status-exists' : 'paste-status-error');
+        let action = '';
+        if (statusKey === 'exists') {
+            action = `<select class="form-control" onchange="setCustomerPasteRowMode(${index}, this.value)">
+                <option value="skip" selected>略過</option>
+                <option value="update">更新原有客戶資料</option>
+            </select>`;
+        } else if (statusKey === 'ok') {
+            action = '<span style="color:var(--text-muted);">新增</span>';
+        } else {
+            action = '<select class="form-control" disabled><option>不匯入</option></select>';
+        }
+        const hint = statusKey === 'exists' && row.currentName && row.currentName !== row.name
+            ? `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">目前：${escapeHtml(row.currentName)}</div>`
+            : '';
+        html += `
+            <tr>
+                <td class="paste-code">${escapeHtml(row.code) || '<span style="color:var(--text-muted);">—</span>'}</td>
+                <td>${escapeHtml(row.name) || `<span style="color:var(--text-muted);">${escapeHtml(row.raw)}</span>`}${hint}</td>
+                <td>${escapeHtml(row.lineName) || '<span style="color:var(--text-muted);">—</span>'}</td>
+                <td><span class="paste-status ${statusClass}">${escapeHtml(CUSTOMER_PASTE_STATUS_LABEL[statusKey])}</span></td>
+                <td>${action}</td>
+            </tr>
+        `;
+    });
+
+    if (tbody) tbody.innerHTML = html;
+    if (wrap) wrap.style.display = 'block';
+    if (summary) {
+        const cloudNote = lookup && lookup.cloudSkipped
+            ? '<br><b>提醒：</b>尚未設定雲端管理金鑰，「已存在」只比對到本機資料，且無法送出匯入。'
+            : (lookup && lookup.cloudError ? `<br><b>提醒：</b>讀取雲端客戶名冊失敗（${escapeHtml(lookup.cloudError)}），「已存在」只比對到本機資料。` : '');
+        summary.innerHTML = `共解析 ${rows.length} 筆：可新增 ${counts.addable} 筆／已存在 ${counts.exists} 筆／有問題 ${counts.error} 筆。${cloudNote}`;
+        summary.style.display = 'block';
+    }
+    if (importBtn) importBtn.disabled = !(counts.addable + counts.exists);
+}
+
+function setCustomerPasteRowMode(index, mode) {
+    const row = customerPasteState.rows[index];
+    if (!row) return;
+    row.mode = mode === 'update' ? 'update' : 'skip';
+}
+
+// 依匯入結果就地更新本機 state.customers（不重新整理頁面）；
+// 電話／地址／備註／LINE 綁定一律保留本機既有值。
+function applyCustomerImportToState(data, items) {
+    const byId = new Map(items.map(item => [String(item.id), item]));
+    const details = Array.isArray(data && data.details) ? data.details : [];
+    let changed = 0;
+    details.forEach(detail => {
+        if (!detail || (detail.action !== 'created' && detail.action !== 'updated')) return;
+        const item = byId.get(String(detail.id));
+        if (!item) return;
+        const idx = state.customers.findIndex(c => c.id === item.id);
+        const local = idx > -1 ? state.customers[idx] : {};
+        const record = {
+            ...local,
+            id: item.id,
+            customDisplayName: item.name,
+            lineDisplayName: item.lineName || local.lineDisplayName || '',
+            lineUserId: local.lineUserId || '',
+            phone: local.phone || '',
+            address: local.address || '',
+            notes: local.notes || ''
+        };
+        record.nickname = CustomerName.mirrorNickname(record, item.id);
+        if (idx > -1) state.customers[idx] = record; else state.customers.push(record);
+        changed += 1;
+    });
+    return changed;
+}
+
+function renderCustomerPasteResult(data) {
+    const box = document.getElementById('customer-paste-result');
+    if (!box) return;
+    const details = Array.isArray(data.details) ? data.details : [];
+    const problems = details.filter(d => d && (d.action === 'failed' || d.action === 'skipped'));
+    const listHtml = problems.length
+        ? `<ul>${problems.slice(0, 50).map(d => `<li>${escapeHtml(d.id || '（無編號）')}：${escapeHtml(d.note || '')}</li>`).join('')}${problems.length > 50 ? '<li>…</li>' : ''}</ul>`
+        : '';
+    box.innerHTML = `<div class="paste-import-result">
+        <b>匯入完成</b><br>
+        成功新增：${Number(data.created) || 0} 筆<br>
+        更新資料：${Number(data.updated) || 0} 筆<br>
+        略過資料：${Number(data.skipped) || 0} 筆<br>
+        錯誤資料：${Number(data.failed) || 0} 筆
+        ${listHtml}
+    </div>`;
+    box.style.display = 'block';
+}
+
+async function confirmCustomerPasteImport() {
+    const importBtn = document.getElementById('customer-paste-import-btn');
+    if (customerPasteState.submitting) return;
+    const items = customerPasteState.rows
+        .filter(row => row.status === 'ok')
+        .map(row => ({ id: row.code, name: row.name, lineName: row.lineName, mode: row.exists ? row.mode : 'skip' }));
+    if (!items.length) {
+        alert('沒有可匯入的資料，請先按「解析資料」。');
+        return;
+    }
+    if (!getCloudApiKey()) {
+        alert('尚未設定雲端管理金鑰，無法匯入客戶。請先在系統設定填入管理 API 金鑰。');
+        return;
+    }
+    customerPasteState.submitting = true;
+    const originalHtml = importBtn ? importBtn.innerHTML : '';
+    if (importBtn) {
+        importBtn.disabled = true;
+        importBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> 匯入中…';
+    }
+    try {
+        const result = await cloudFetch('/api/customers/bulk-import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items })
+        });
+        if (result.skipped) {
+            alert('尚未設定雲端管理金鑰，無法匯入客戶。');
+            return;
+        }
+        if (result.error) {
+            alert(`匯入失敗：${result.error}`);
+            return;
+        }
+        const data = result.data || {};
+        applyCustomerImportToState(data, items);
+        saveStateToStorage();
+        renderCustomerPasteResult(data);
+        // 立即刷新客戶列表（不重新整理頁面）：先就地更新，再拉一次雲端名冊補齊 LINE 名稱等欄位。
+        renderCustomers();
+        await syncCustomersFromCloud();
+        saveStateToStorage();
+        renderCustomers();
+        if (currentViewId === 'dashboard') renderDashboard();
+        // 剛匯入的客戶現在都已存在，重算預覽狀態避免團主重複按
+        const knownIds = new Set(state.customers.map(c => String(c.id)));
+        customerPasteState.rows.forEach(row => {
+            if (row.status !== 'ok' || row.exists) return;
+            if (knownIds.has(row.code)) { row.exists = true; row.currentName = row.name; row.currentLineName = row.lineName; }
+        });
+        const resultBox = document.getElementById('customer-paste-result');
+        const savedResultHtml = resultBox ? resultBox.innerHTML : '';
+        renderCustomerPastePreview({ cloudSkipped: false, cloudError: '' });
+        if (resultBox && savedResultHtml) { resultBox.innerHTML = savedResultHtml; resultBox.style.display = 'block'; }
+    } finally {
+        customerPasteState.submitting = false;
+        if (importBtn) {
+            importBtn.innerHTML = originalHtml;
+            importBtn.disabled = false;
+        }
+    }
+}
+
 function deleteCustomer(id) {
     const hasHistory = state.orders.some(o => o.customerId === id);
     if (hasHistory) {

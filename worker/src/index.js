@@ -286,10 +286,135 @@ function validateCustomerPayload(payload) {
     return { customName: customName || null, nameProvided, pickupType: pickupType || null, address: rawAddress || null };
 }
 
+// ==========================================================================
+// 客戶「快速貼上匯入」批次匯入（POST /api/customers/bulk-import）
+// 只寫名稱三欄（custom_display_name / line_display_name / nickname）：
+// line_user_id、pickup_type、address、profile_status 一律不動，
+// 否則 LINE 綁定會斷、客人在 LIFF 填的地址會被清掉、訂單也會找不到客戶。
+// ⚠️ 客戶編號一律是字串（"001" 不是 1），不可用 Number() 處理。
+// ==========================================================================
+const BULK_IMPORT_MAX_ITEMS = 500;
+const BULK_IMPORT_LOOKUP_CHUNK = 100;
+
+function validateBulkImportItem(item) {
+    if (!item || typeof item !== "object") return { error: "資料格式錯誤" };
+    const id = item.id === null || item.id === undefined ? "" : String(item.id).trim();
+    const name = item.name === null || item.name === undefined ? "" : String(item.name).trim();
+    const lineName = item.lineName === null || item.lineName === undefined ? "" : String(item.lineName).trim();
+    const mode = String(item.mode || "skip").trim() === "update" ? "update" : "skip";
+    if (!id) return { error: "缺少客戶編號" };
+    if (id.length > 32) return { error: "客戶編號請縮短至 32 字以內" };
+    if (!name) return { error: "缺少客戶姓名" };
+    if (name.length > 100) return { error: "客戶姓名請縮短至 100 字以內" };
+    if (lineName.length > 100) return { error: "LINE 名稱請縮短至 100 字以內" };
+    // LINE 名稱留空時沿用姓名（與前端解析規則一致）。
+    return { id, name, lineName: lineName || name, mode };
+}
+
+async function findExistingCustomerRows(env, ids) {
+    const found = new Map();
+    for (let index = 0; index < ids.length; index += BULK_IMPORT_LOOKUP_CHUNK) {
+        const chunk = ids.slice(index, index + BULK_IMPORT_LOOKUP_CHUNK);
+        const placeholders = chunk.map(() => "?").join(",");
+        const rows = await env.DB.prepare(`SELECT id, nickname, custom_display_name, line_display_name
+            FROM customers WHERE id IN (${placeholders})`).bind(...chunk).all();
+        for (const row of rows.results) found.set(String(row.id), row);
+    }
+    return found;
+}
+
+// 略過既有客戶時，回報「現有資料 vs 貼上資料」的差異，讓團主知道自己略過了什麼。
+function describeSkipDifference(existing, item) {
+    const currentName = String(existing.custom_display_name || existing.nickname || "").trim();
+    const currentLineName = String(existing.line_display_name || "").trim();
+    const diff = [];
+    if (currentName !== item.name) diff.push(`姓名「${currentName || "（空白）"}」→「${item.name}」`);
+    if (currentLineName !== item.lineName) diff.push(`LINE 名稱「${currentLineName || "（空白）"}」→「${item.lineName}」`);
+    return diff.length ? `客戶編號已存在，已略過（差異：${diff.join("；")}）` : "客戶編號已存在，資料相同，已略過";
+}
+
+async function handleCustomerBulkImport(request, env) {
+    const payload = await readJson(request);
+    if (!payload || typeof payload !== "object" || !Array.isArray(payload.items)) return json({ error: "JSON 格式錯誤" }, 400);
+    if (!payload.items.length) return json({ error: "沒有可匯入的資料" }, 400);
+    if (payload.items.length > BULK_IMPORT_MAX_ITEMS) return json({ error: `一次最多匯入 ${BULK_IMPORT_MAX_ITEMS} 筆，請分批貼上` }, 400);
+
+    // 第一輪：逐筆驗證，並在同一批資料內去重（同一個編號只處理第一筆，
+    // 否則同一個 batch 會撞到 PRIMARY KEY UNIQUE 而整批 rollback）。
+    const plans = [];
+    const seen = new Set();
+    for (const raw of payload.items) {
+        const item = validateBulkImportItem(raw);
+        if (item.error) {
+            const shownId = raw && typeof raw === "object" && raw.id !== undefined && raw.id !== null ? String(raw.id).trim().slice(0, 32) : "";
+            plans.push({ ok: false, id: shownId, action: "failed", note: item.error });
+            continue;
+        }
+        if (seen.has(item.id)) {
+            plans.push({ ok: false, id: item.id, action: "skipped", note: "同一批資料中重複的客戶編號，只處理第一筆" });
+            continue;
+        }
+        seen.add(item.id);
+        plans.push({ ok: true, item });
+    }
+
+    const existing = await findExistingCustomerRows(env, [...seen]);
+    const statements = [];
+    const details = [];
+    let created = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const plan of plans) {
+        if (!plan.ok) {
+            if (plan.action === "failed") failed += 1; else skipped += 1;
+            details.push({ id: plan.id, action: plan.action, note: plan.note });
+            continue;
+        }
+        const item = plan.item;
+        const current = existing.get(item.id);
+        if (current) {
+            if (item.mode !== "update") {
+                skipped += 1;
+                details.push({ id: item.id, action: "skipped", note: describeSkipDifference(current, item) });
+                continue;
+            }
+            // 只更新名稱三欄；line_user_id／pickup_type／address／profile_status 完全不碰。
+            statements.push(env.DB.prepare(`UPDATE customers
+                SET custom_display_name = ?, line_display_name = ?, nickname = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?`).bind(item.name, item.lineName, item.name, item.id));
+            updated += 1;
+            details.push({ id: item.id, action: "updated", note: "已更新客戶姓名與 LINE 名稱" });
+            continue;
+        }
+        statements.push(env.DB.prepare(`INSERT INTO customers
+            (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, NULL, NULL, NULL, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`)
+            .bind(item.id, item.name, item.name, item.lineName));
+        created += 1;
+        details.push({ id: item.id, action: "created", note: "已新增客戶" });
+    }
+
+    if (statements.length) {
+        try {
+            await env.DB.batch(statements);
+        } catch (error) {
+            console.error("Customer bulk import failed", error);
+            return json({ error: "匯入寫入失敗，請確認資料後再試一次" }, 500);
+        }
+    }
+    return json({ ok: true, created, updated, skipped, failed, details });
+}
+
 async function handleCustomerRoutes(request, env, url) {
     if (request.method === "GET" && url.pathname === "/api/customers") {
         const rows = await env.DB.prepare(`${customerSelectSql()} ORDER BY id LIMIT 2000`).all();
         return json(rows.results);
+    }
+    // 必須排在 /api/customers/:id 之前，否則 "bulk-import" 會被當成客戶編號。
+    if (request.method === "POST" && url.pathname === "/api/customers/bulk-import") {
+        return handleCustomerBulkImport(request, env);
     }
     const idMatch = url.pathname.match(/^\/api\/customers\/([^/]+)$/);
     if (!idMatch) return null;
@@ -875,6 +1000,7 @@ async function fetchHandler(request, env, context) {
 module.exports = {
     fetch: fetchHandler, createDependencies, corsHeaders, isAdmin, withCors, findTargetOrder, importInboxRecord,
     validateProductPayload, handleProductRoutes, validateCustomerPayload, handleCustomerRoutes,
+    validateBulkImportItem, handleCustomerBulkImport,
     processPostback, reserveWebhookEvent, validateGroupBuyPayload,
     upsertGroupBuy, getFlexContext, publishFlexMessage, stableId
 };

@@ -66,6 +66,12 @@
 
     window.addEventListener('load', () => {
         if ('serviceWorker' in navigator && /^https?:$/.test(window.location.protocol)) {
+            let reloadingForUpdate = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (reloadingForUpdate) return;
+                reloadingForUpdate = true;
+                window.location.reload();
+            });
             navigator.serviceWorker.register('./service-worker.js').catch(error => {
                 console.warn('Service Worker 註冊失敗', error);
             });

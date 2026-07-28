@@ -29,6 +29,7 @@ function createPwaHarness(userAgent) {
         userAgent,
         standalone: false,
         serviceWorker: {
+            addEventListener: () => {},
             register: async () => {
                 serviceWorkerRegistrations += 1;
             }
@@ -123,7 +124,9 @@ test("PWA manifest、Service Worker、安裝提示與build產物契約完整", (
     assert.match(pwa, /if \(isEmbeddedBrowser\(\)\) return/);
     assert.match(pwa, /navigator\.serviceWorker\.register\('\.\/service-worker\.js'\)/);
     assert.match(serviceWorker, /CACHE_NAME/);
-    assert.match(serviceWorker, /request\.mode === 'navigate'/);
+    assert.match(serviceWorker, /event\.respondWith\(networkFirst\(request\)\)/);
+    assert.doesNotMatch(serviceWorker, /cachedAsset/);
+    assert.match(pwa, /serviceWorker\.addEventListener\('controllerchange'/);
     assert.match(serviceWorker, /url\.pathname\.includes\('\/api\/'\)/);
     assert.match(build, /manifest\.webmanifest/);
     assert.match(build, /service-worker\.js/);

@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'ah-hsien-easy-buy-';
-const CACHE_NAME = `${CACHE_PREFIX}20260729-mobile-pwa`;
+const CACHE_NAME = `${CACHE_PREFIX}20260729-mobile-pwa-v2`;
 const CORE_ASSETS = [
     './',
     './index.html',
@@ -47,15 +47,6 @@ async function networkFirst(request) {
     }
 }
 
-async function cachedAsset(request) {
-    const cache = await caches.open(CACHE_NAME);
-    const cached = await cache.match(request, { ignoreSearch: true });
-    if (cached) return cached;
-    const response = await fetch(request);
-    if (response.ok) await cache.put(request, response.clone());
-    return response;
-}
-
 self.addEventListener('fetch', event => {
     const request = event.request;
     if (request.method !== 'GET') return;
@@ -63,10 +54,5 @@ self.addEventListener('fetch', event => {
     const url = new URL(request.url);
     if (url.origin !== self.location.origin || url.pathname.includes('/api/')) return;
 
-    if (request.mode === 'navigate') {
-        event.respondWith(networkFirst(request));
-        return;
-    }
-
-    event.respondWith(cachedAsset(request));
+    event.respondWith(networkFirst(request));
 });

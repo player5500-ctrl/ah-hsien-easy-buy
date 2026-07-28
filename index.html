@@ -157,6 +157,23 @@
                         </div>
                     </div>
 
+                    <div class="inventory-alert-grid">
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title"><i class="fa-solid fa-triangle-exclamation text-orange"></i> 即將售完</div>
+                                <span class="badge stock-low" id="dashboard-low-stock-count">0 項</span>
+                            </div>
+                            <div class="card-body" id="dashboard-low-stock-list">目前沒有即將售完商品</div>
+                        </div>
+                        <div class="card">
+                            <div class="card-header">
+                                <div class="card-title"><i class="fa-solid fa-circle-xmark" style="color:#d64545;"></i> 已售完</div>
+                                <span class="badge stock-sold-out" id="dashboard-sold-out-count">0 項</span>
+                            </div>
+                            <div class="card-body" id="dashboard-sold-out-list">目前沒有售完商品</div>
+                        </div>
+                    </div>
+
                     <!-- 快速導覽操作區 -->
                     <div style="margin-bottom: 24px;">
                         <button class="btn btn-teal btn-lg" onclick="switchView('orders', 'by-customer')">
@@ -443,6 +460,10 @@
                                                 <th>商品名稱</th>
                                                 <th>規格</th>
                                                 <th>總訂購數量</th>
+                                                <th>可賣</th>
+                                                <th>已售</th>
+                                                <th>剩餘</th>
+                                                <th>庫存狀態</th>
                                                 <th>單位</th>
                                                 <th>購買客戶數</th>
                                                 <th>操作</th>
@@ -556,6 +577,10 @@
                                             <th>售價</th>
                                             <th>單位</th>
                                             <th>啟用狀態</th>
+                                            <th>可賣</th>
+                                            <th>已售</th>
+                                            <th>剩餘</th>
+                                            <th>庫存狀態</th>
                                             <th style="width: 200px;">操作</th>
                                         </tr>
                                     </thead>
@@ -608,13 +633,36 @@
 
                     <!-- =================== 匯出子頁面 =================== -->
 <div id="excel-export-subview">
+                        <div class="card" style="margin-bottom:20px;">
+                            <div class="card-header"><div class="card-title"><i class="fa-solid fa-file-import"></i> Excel 訂單匯入（先預覽、後確認）</div></div>
+                            <div class="card-body">
+                                <p class="page-subtitle">工作表欄位：客戶編號、商品編號、數量、取貨方式、單價（選填）。預覽不會扣庫存。</p>
+                                <div class="form-grid">
+                                    <div class="form-group">
+                                        <label class="form-label" for="excel-import-group-select">匯入團購活動</label>
+                                        <select class="form-control" id="excel-import-group-select" onchange="onExcelGroupChange(this.value)"></select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label class="form-label" for="excel-import-file">選擇 Excel 檔案</label>
+                                        <input type="file" class="form-control" id="excel-import-file" accept=".xlsx,.xls,.csv">
+                                    </div>
+                                    <div class="form-group" style="justify-content:flex-end;">
+                                        <button class="btn btn-secondary" onclick="previewExcelOrderImport()"><i class="fa-solid fa-magnifying-glass"></i> 預覽與檢查庫存</button>
+                                    </div>
+                                </div>
+                                <div id="excel-import-preview" class="table-responsive" style="margin-top:16px;"></div>
+                                <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+                                    <button class="btn btn-primary" id="excel-import-confirm" onclick="confirmExcelOrderImport()" disabled><i class="fa-solid fa-check"></i> 確認正式匯入</button>
+                                </div>
+                            </div>
+                        </div>
                         <div class="card">
                             <div class="card-header"><div class="card-title">匯出團購活動資料（含四個工作表）</div></div>
                             <div class="card-body">
                                 <div class="form-grid">
                                     <div class="form-group">
                                         <label class="form-label" for="export-group-select">選擇匯出活動</label>
-                                        <select class="form-control" id="export-group-select">
+                                        <select class="form-control" id="export-group-select" onchange="onExcelGroupChange(this.value)">
                                             <!-- 動態載入活動項目 -->
                                         </select>
                                     </div>
@@ -664,7 +712,7 @@
     
     <!-- 1. 團購活動 Modal -->
     <div class="modal-backdrop" id="group-buy-modal">
-        <div class="modal-container">
+        <div class="modal-container" style="max-width:1180px;">
             <div class="modal-header">
                 <h3 class="modal-title" id="group-buy-modal-title">新增團購活動</h3>
                 <button class="modal-close" onclick="closeGroupBuyModal()">&times;</button>
@@ -702,13 +750,61 @@
                     </div>
                     <div class="form-group" style="margin-top: 16px;">
                         <label class="form-label">本團商品（記事本文案與 LINE 商品卡只列勾選的商品；全部不勾＝所有啟用中商品）</label>
-                        <div id="gb-products" style="max-height: 180px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: 8px; padding: 8px 12px;"></div>
+                        <div id="gb-products" style="max-height: 380px; overflow-y: auto; border: 1px solid var(--border-light); border-radius: 8px; padding: 8px 12px;"></div>
                     </div>
                 </form>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeGroupBuyModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveGroupBuy()">儲存活動</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="stock-adjust-modal">
+        <div class="modal-container" style="max-width:520px;">
+            <div class="modal-header">
+                <h3 class="modal-title">調整庫存</h3>
+                <button class="modal-close" onclick="closeModal('stock-adjust-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="stock-adjust-group-id">
+                <input type="hidden" id="stock-adjust-product-id">
+                <p><strong id="stock-adjust-product-label"></strong></p>
+                <p>目前剩餘：<strong id="stock-adjust-current">0</strong>；調整後：<strong id="stock-adjust-after">0</strong></p>
+                <div class="form-group">
+                    <label class="form-label required" for="stock-adjust-quantity">增加或減少數量（減少請輸入負數）</label>
+                    <input type="number" class="form-control" id="stock-adjust-quantity" value="0" oninput="updateStockAdjustPreview()">
+                </div>
+                <div class="form-group" style="margin-top:12px;">
+                    <label class="form-label required" for="stock-adjust-reason">調整原因</label>
+                    <textarea class="form-control" id="stock-adjust-reason" maxlength="500"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('stock-adjust-modal')">取消</button>
+                <button class="btn btn-primary" onclick="confirmStockAdjustment()">確認調整</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="stock-reconcile-modal">
+        <div class="modal-container" style="max-width:760px;">
+            <div class="modal-header">
+                <h3 class="modal-title">重新核對庫存</h3>
+                <button class="modal-close" onclick="closeModal('stock-reconcile-modal')">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="stock-reconcile-group-id">
+                <p class="page-subtitle">此畫面只顯示差異；按確認後才會修正並寫入異動紀錄。</p>
+                <div class="table-responsive"><table class="table-custom">
+                    <thead><tr><th>商品</th><th>名稱</th><th>系統已售</th><th>有效訂單加總</th><th>差異</th></tr></thead>
+                    <tbody id="stock-reconcile-tbody"></tbody>
+                </table></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('stock-reconcile-modal')">關閉</button>
+                <button class="btn btn-primary" id="stock-reconcile-confirm" onclick="confirmStockReconciliation()">確認修正差異</button>
             </div>
         </div>
     </div>
@@ -979,7 +1075,7 @@
                     <div class="form-grid" style="margin-bottom: 16px;">
                         <div class="form-group">
                             <label class="form-label required" for="ord-group-buy">選擇團購活動</label>
-                            <select class="form-control" id="ord-group-buy" required>
+                            <select class="form-control" id="ord-group-buy" required onchange="onOrderGroupBuyChange()">
                                 <!-- 動態載入 -->
                             </select>
                         </div>

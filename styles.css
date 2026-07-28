@@ -1018,6 +1018,13 @@ textarea.form-control {
     border-bottom: none;
 }
 
+.cart-stock-hint {
+    display: block;
+    margin-top: 4px;
+    color: var(--text-muted);
+    line-height: 1.35;
+}
+
 .cart-total-row {
     background-color: rgba(250, 249, 246, 0.5);
     padding: 14px 16px;
@@ -1417,6 +1424,16 @@ textarea.form-control {
     #print-area { display: block !important; position: static; width: 100%; color: #000; background: #fff; font-size: 12pt; }
     #print-area .print-page { page-break-after: always; }
     #print-area .print-page:last-child { page-break-after: auto; }
+    #print-area .inventory-print-table {
+        width: 100%;
+        table-layout: fixed;
+        font-size: 10px;
+    }
+    #print-area .inventory-print-table th,
+    #print-area .inventory-print-table td {
+        padding: 4px;
+        overflow-wrap: anywhere;
+    }
     #print-area h2 { font-size: 16pt; margin: 0 0 4mm; }
     #print-area h3 { font-size: 13pt; margin: 4mm 0 2mm; }
     #print-area .print-meta { font-size: 10.5pt; margin-bottom: 3mm; }
@@ -1425,4 +1442,65 @@ textarea.form-control {
     #print-area th { background: #eee; }
     #print-area .print-total { text-align: right; font-weight: bold; margin-top: 2mm; font-size: 12pt; }
     #print-area .print-note { font-size: 10pt; color: #333; margin-top: 2mm; }
+}
+
+.inventory-alert-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.inventory-alert-item {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.inventory-alert-item:last-child {
+    border-bottom: 0;
+}
+
+.badge.stock-in,
+.stock-in {
+    background: #d9f7e8;
+    color: #147a4b;
+}
+
+.badge.stock-low,
+.stock-low {
+    background: #fff0cf;
+    color: #a65c00;
+}
+
+.badge.stock-sold-out,
+.stock-sold-out {
+    background: #ffe0e0;
+    color: #b42323;
+}
+
+.badge.stock-unlimited,
+.stock-unlimited {
+    background: #edf0f4;
+    color: #59636f;
+}
+
+.stock-config-table {
+    min-width: 1050px;
+}
+
+.stock-config-table th,
+.stock-config-table td {
+    padding: 8px;
+    vertical-align: middle;
+}
+
+.stock-config-table input[type="number"] {
+    min-width: 76px;
+    padding: 7px;
+}
+
+@media (max-width: 768px) {
+    .inventory-alert-grid {
+        grid-template-columns: 1fr;
+    }
 }

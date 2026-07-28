@@ -79,6 +79,19 @@ test("Flex 商品卡顯示圖片、名稱、規格、售價、單位、截止時
     }
 });
 
+test("新商品卡可顯示本團固定限量與售完為止，不寫死即時剩餘數量", () => {
+    const message = buildFlexMessage({
+        groupBuy: { id: "GB1", name: "測試團", ends_at: "2099-12-31T00:00:00Z" },
+        product: {
+            id: "P1", name: "Pril檸檬", specs: "653ml×3瓶", unit: "組", price: 180,
+            stock_enabled: true, sellable_quantity: 30, remaining_quantity: 7
+        }
+    });
+    const text = JSON.stringify(message);
+    assert.match(text, /限量 30 組｜售完為止/);
+    assert.doesNotMatch(text, /剩餘 7/);
+});
+
 test("數量組合會去重、限制一到三顆合法按鈕", () => {
     assert.deepEqual(normalizeQuantities([3, 1, 3, 0, 100, 2, 4]), [3, 1, 2]);
     assert.throws(() => buildFlexMessage({ groupBuy, product, quantities: [] }), /至少選擇一個數量按鈕/);

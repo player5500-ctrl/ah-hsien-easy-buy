@@ -6,6 +6,7 @@
 //     完全對齊 index.js 的 processPostback，讓 LIFF 與商品卡共用同一張訂單。
 
 const CustomerName = require("../../customer-name.js");
+const Inventory = require("./inventory.js");
 
 const PICKUP_TYPES = new Set(["自取", "外送"]);
 
@@ -202,7 +203,10 @@ function getConfig(env) {
 
 async function getGroupBuyProduct(env, groupBuyId, productId) {
     const row = await env.DB.prepare(`SELECT p.id, p.name, p.specs, p.unit, p.image_url, p.price, p.pickup_price, p.delivery_price,
-            gb.status AS group_buy_status, gb.ends_at
+            gb.status AS group_buy_status, gb.ends_at,
+            gbp.incoming_quantity, gbp.reserved_quantity, gbp.sellable_quantity,
+            gbp.sold_quantity, gbp.remaining_quantity, gbp.low_stock_threshold,
+            gbp.stock_status, gbp.stock_enabled
         FROM group_buys gb
         JOIN group_buy_products gbp ON gbp.group_buy_id = gb.id AND gbp.enabled = 1
         JOIN products p ON p.id = gbp.product_id
@@ -221,6 +225,7 @@ async function getGroupBuyProduct(env, groupBuyId, productId) {
             delivery_price: row.delivery_price
         },
         groupBuyStatus: groupBuyState(row),
+        stock: Inventory.publicStock({ ...row, group_buy_id: groupBuyId, product_id: productId }),
         stats
     });
 }
@@ -257,7 +262,8 @@ async function setQuantity(request, env) {
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) throw new LiffHttpError(400, "數量需為 1 到 99 的整數");
 
     const context = await env.DB.prepare(`SELECT gb.status AS group_buy_status, gb.ends_at,
-            p.id AS product_id, p.line_code, p.price, p.pickup_price, p.delivery_price, p.enabled AS product_enabled
+            p.id AS product_id, p.line_code, p.price, p.pickup_price, p.delivery_price, p.enabled AS product_enabled,
+            gbp.stock_enabled, gbp.remaining_quantity
         FROM group_buys gb
         JOIN group_buy_products gbp ON gbp.group_buy_id = gb.id AND gbp.enabled = 1
         JOIN products p ON p.id = gbp.product_id
@@ -301,7 +307,7 @@ async function setQuantity(request, env) {
     const unitPrice = effectivePrice(context, pickupType);
     const productCode = context.line_code || context.product_id;
 
-    const statements = [
+    const preStatements = [
         customerUpsertStatement(env, customerId, lineDisplayName, sub),
         // 客戶列 upsert 後、若本次帶入非空地址就更新，維持與訂單同一原子批次。
         ...(willPersistAddress ? [addressUpdateStatement(env, customerId, providedAddress)] : []),
@@ -310,17 +316,18 @@ async function setQuantity(request, env) {
             (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
             VALUES (?, ?, ?, ?, '新訂單', ?, NULL, 0, CURRENT_TIMESTAMP)`)
             .bind(orderId, `liff:${orderId}`, customerId, pickupType, groupBuyId),
-        env.DB.prepare(`INSERT INTO order_items
-            (order_id, product_code, product_id, quantity, unit_price, amount, item_status, updated_at)
-            VALUES (?, ?, ?, ?, ?, ? * ?, 'active', CURRENT_TIMESTAMP)
-            ON CONFLICT(order_id, product_id) DO UPDATE SET quantity = excluded.quantity,
-            product_code = excluded.product_code, unit_price = excluded.unit_price, amount = excluded.amount,
-            item_status = 'active', updated_at = CURRENT_TIMESTAMP`)
-            .bind(orderId, productCode, productId, quantity, unitPrice, unitPrice, quantity),
-        recomputeStatement(env, orderId, pickupType),
-        changeLogStatement(env, orderId, customerId, groupBuyId, productId, "set_quantity", quantityBefore, quantity)
     ];
-    await env.DB.batch(statements);
+    await Inventory.executeOrderMutation(env, {
+        orderId,
+        groupBuyId,
+        customerId,
+        changes: [{ productId, productCode, quantity, unitPrice }],
+        sourceType: "liff",
+        preStatements,
+        activeStatus: "新訂單",
+        pickupType,
+        notes: quantityBefore === 0 ? "LIFF 確認訂購" : "LIFF 修改數量"
+    });
 
     const order = await buildOrderView(env, customerId, groupBuyId);
     // 回應附掛本人最新地址（與 my-order 一致），供成功畫面顯示；永不進入 stats。
@@ -328,7 +335,8 @@ async function setQuantity(request, env) {
     order.address = finalAddress;
     order.hasAddress = hasNonEmptyAddress(finalAddress);
     const stats = await computeStats(env, groupBuyId);
-    return json({ ok: true, order, stats });
+    const stock = Inventory.publicStock(await Inventory.getStock(env, groupBuyId, productId));
+    return json({ ok: true, order, stats, stock });
 }
 
 async function cancelItem(request, env) {
@@ -344,15 +352,22 @@ async function cancelItem(request, env) {
         const previousItem = await env.DB.prepare("SELECT quantity FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1")
             .bind(existingOrder.id, productId).first();
         const quantityBefore = Number(previousItem?.quantity || 0);
-        await env.DB.batch([
-            env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND product_id = ?").bind(existingOrder.id, productId),
-            recomputeStatement(env, existingOrder.id),
-            changeLogStatement(env, existingOrder.id, customerId, groupBuyId, productId, "cancel_item", quantityBefore, 0)
-        ]);
+        if (quantityBefore > 0) {
+            await Inventory.executeOrderMutation(env, {
+                orderId: existingOrder.id,
+                groupBuyId,
+                customerId,
+                changes: [{ productId, quantity: 0, unitPrice: 0 }],
+                sourceType: "liff",
+                activeStatus: "新訂單",
+                notes: "LIFF 取消商品"
+            });
+        }
     }
     const order = await buildOrderView(env, customerId, groupBuyId);
     const stats = await computeStats(env, groupBuyId);
-    return json({ ok: true, order, stats });
+    const stock = Inventory.publicStock(await Inventory.getStock(env, groupBuyId, productId));
+    return json({ ok: true, order, stats, stock });
 }
 
 async function cancelOrder(request, env) {
@@ -364,15 +379,24 @@ async function cancelOrder(request, env) {
     const existingOrder = await env.DB.prepare("SELECT id FROM orders WHERE customer_id = ? AND group_buy_id = ? LIMIT 1")
         .bind(customerId, groupBuyId).first();
     if (existingOrder) {
-        const items = (await env.DB.prepare("SELECT product_id, quantity FROM order_items WHERE order_id = ?").bind(existingOrder.id).all()).results;
-        const statements = [];
-        for (const item of items) {
-            if (item.product_id == null) continue; // 稽核紀錄的 product_id 為 NOT NULL；跳過無 product_id 的舊資料列。
-            statements.push(changeLogStatement(env, existingOrder.id, customerId, groupBuyId, item.product_id, "cancel_item", Number(item.quantity || 0), 0));
+        const items = (await env.DB.prepare(`SELECT product_id, product_code, unit_price
+            FROM order_items WHERE order_id = ? AND product_id IS NOT NULL`).bind(existingOrder.id).all()).results;
+        if (items.length) {
+            await Inventory.executeOrderMutation(env, {
+                orderId: existingOrder.id,
+                groupBuyId,
+                customerId,
+                changes: items.map(item => ({
+                    productId: item.product_id,
+                    productCode: item.product_code,
+                    quantity: 0,
+                    unitPrice: Number(item.unit_price || 0)
+                })),
+                sourceType: "liff",
+                activeStatus: "新訂單",
+                notes: "LIFF 取消整張訂單"
+            });
         }
-        statements.push(env.DB.prepare("DELETE FROM order_items WHERE order_id = ?").bind(existingOrder.id));
-        statements.push(recomputeStatement(env, existingOrder.id));
-        await env.DB.batch(statements);
     }
     const order = await buildOrderView(env, customerId, groupBuyId);
     const stats = await computeStats(env, groupBuyId);
@@ -405,6 +429,14 @@ async function handleLiffRoutes(request, env, url) {
     } catch (error) {
         if (error instanceof LiffAuthError) return json({ error: "無法驗證您的 LINE 身分" }, 401);
         if (error instanceof LiffHttpError) return json({ error: error.message }, error.status);
+        if (error instanceof Inventory.InventoryHttpError) {
+            return json({
+                error: error.code,
+                message: error.message,
+                remainingQuantity: error.remainingQuantity,
+                requestedQuantity: error.requestedQuantity
+            }, error.status);
+        }
         console.error("LIFF request failed", { message: error?.message || "unknown" });
         return json({ error: "伺服器內部錯誤" }, 500);
     }

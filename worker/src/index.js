@@ -2,6 +2,7 @@ const LineOrder = require("../../line-order.js");
 const { handleWebhook } = require("./webhook-handler.js");
 const LineFlex = require("./line-flex.js");
 const Liff = require("./liff.js");
+const Inventory = require("./inventory.js");
 const CustomerName = require("../../customer-name.js");
 const CustomerPasteParse = require("../../customer-paste-parse.js");
 
@@ -588,15 +589,17 @@ async function processPostback(env, record) {
             .bind(orderId, parsed.productId).first() : null;
         const quantityBefore = Number(previousItem?.quantity || 0);
 
-        const statements = [
+        const customerStatement =
             env.DB.prepare(CustomerName.CUSTOMER_UPSERT_SQL)
                 .bind(customerId, lineDisplayName || "LINE 客戶", lineDisplayName || null, record.lineUserId)
-        ];
+        ;
 
         if (parsed.action === "view_order") {
-            statements.push(env.DB.prepare("UPDATE line_webhook_events SET process_status = 'processed', error_message = NULL, processed_at = CURRENT_TIMESTAMP WHERE webhook_event_id = ?")
-                .bind(record.webhookEventId));
-            await env.DB.batch(statements);
+            await env.DB.batch([
+                customerStatement,
+                env.DB.prepare("UPDATE line_webhook_events SET process_status = 'processed', error_message = NULL, processed_at = CURRENT_TIMESTAMP WHERE webhook_event_id = ?")
+                    .bind(record.webhookEventId)
+            ]);
             return { processed: true, action: parsed.action };
         }
 
@@ -615,44 +618,41 @@ async function processPostback(env, record) {
                 friendlyMessage, record.data, parsed.action === "set_quantity" ? "replace" : "cancel",
                 isoFromTimestamp(record.timestamp), LineOrder.STATUS.IMPORTED, orderId);
 
+        const preStatements = [customerStatement, inboxInsert];
         if (parsed.action === "set_quantity") {
-            statements.push(
-                inboxInsert,
-                env.DB.prepare(`INSERT OR IGNORE INTO orders
-                    (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
-                    VALUES (?, ?, ?, '', '新訂單', ?, ?, 0, CURRENT_TIMESTAMP)`)
-                    .bind(orderId, `postback:${record.webhookEventId}`, customerId, parsed.groupBuyId, record.groupId),
-                env.DB.prepare(`INSERT INTO order_items
-                    (order_id, product_code, product_id, quantity, unit_price, amount, item_status, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ? * ?, 'active', CURRENT_TIMESTAMP)
-                    ON CONFLICT(order_id, product_id) DO UPDATE SET quantity = excluded.quantity,
-                    product_code = excluded.product_code, unit_price = excluded.unit_price, amount = excluded.amount,
-                    item_status = 'active', updated_at = CURRENT_TIMESTAMP`)
-                    .bind(orderId, context.line_code || context.product_id, context.product_id, parsed.quantity, context.price, context.price, parsed.quantity)
-            );
-        } else {
-            statements.push(
-                inboxInsert,
-                env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND product_id = ?").bind(orderId, parsed.productId)
-            );
+            preStatements.push(env.DB.prepare(`INSERT OR IGNORE INTO orders
+                (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
+                VALUES (?, ?, ?, '', '新訂單', ?, ?, 0, CURRENT_TIMESTAMP)`)
+                .bind(orderId, `postback:${record.webhookEventId}`, customerId, parsed.groupBuyId, record.groupId));
         }
-
-        statements.push(
-            env.DB.prepare(`UPDATE orders SET total_amount = COALESCE((SELECT SUM(amount) FROM order_items WHERE order_id = ?), 0),
-                status = CASE WHEN EXISTS(SELECT 1 FROM order_items WHERE order_id = ?) THEN '新訂單' ELSE '已取消' END,
-                line_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(orderId, orderId, record.groupId, orderId),
-            env.DB.prepare(`INSERT INTO order_change_logs
-                (id, order_id, customer_id, group_buy_id, product_id, action, quantity_before, quantity_after, source_type, webhook_event_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'line_postback', ?)`)
-                .bind(crypto.randomUUID(), existingOrder || parsed.action === "set_quantity" ? orderId : null, customerId, parsed.groupBuyId,
-                    parsed.productId, parsed.action, quantityBefore, parsed.quantity || 0, record.webhookEventId),
-            env.DB.prepare("UPDATE line_webhook_events SET process_status = 'processed', error_message = NULL, processed_at = CURRENT_TIMESTAMP WHERE webhook_event_id = ?")
-                .bind(record.webhookEventId)
-        );
-        await env.DB.batch(statements);
+        await Inventory.executeOrderMutation(env, {
+            orderId,
+            groupBuyId: parsed.groupBuyId,
+            customerId,
+            changes: [{
+                productId: context.product_id,
+                productCode: context.line_code || context.product_id,
+                quantity: parsed.action === "set_quantity" ? parsed.quantity : 0,
+                unitPrice: Number(context.price || 0)
+            }],
+            sourceType: "line_postback",
+            webhookEventId: record.webhookEventId,
+            preStatements,
+            activeStatus: "新訂單",
+            notes: parsed.action === "set_quantity" ? "LINE 商品卡確認訂購" : "LINE 商品卡取消商品",
+            postStatements: [
+                env.DB.prepare("UPDATE orders SET line_group_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .bind(record.groupId, orderId),
+                env.DB.prepare("UPDATE line_webhook_events SET process_status = 'processed', error_message = NULL, processed_at = CURRENT_TIMESTAMP WHERE webhook_event_id = ?")
+                    .bind(record.webhookEventId)
+            ]
+        });
         return { processed: true, action: parsed.action, orderId, quantity: parsed.quantity || 0 };
     } catch (error) {
         await markWebhookFailed(env, record.webhookEventId, error?.message || "Postback 處理失敗");
+        if (error instanceof Inventory.InventoryHttpError) {
+            return { processed: false, error: error.message, code: error.code, remainingQuantity: error.remainingQuantity };
+        }
         console.error("LINE postback processing failed", { webhookEventId: record.webhookEventId, message: error?.message || "unknown" });
         return { processed: false, error: "Postback 處理失敗" };
     }
@@ -683,7 +683,9 @@ async function upsertGroupBuy(env, payload) {
         VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, starts_at = excluded.starts_at, ends_at = excluded.ends_at,
         status = excluded.status, notes = excluded.notes, updated_at = CURRENT_TIMESTAMP`)
-        .bind(groupBuy.id, groupBuy.name, groupBuy.startsAt, groupBuy.endsAt, groupBuy.status, groupBuy.notes)];
+        .bind(groupBuy.id, groupBuy.name, groupBuy.startsAt, groupBuy.endsAt, groupBuy.status, groupBuy.notes),
+    env.DB.prepare("UPDATE group_buy_products SET enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE group_buy_id = ?")
+        .bind(groupBuy.id)];
     for (const productId of groupBuy.productIds) {
         statements.push(env.DB.prepare(`INSERT INTO group_buy_products (group_buy_id, product_id, enabled) VALUES (?, ?, 1)
             ON CONFLICT(group_buy_id, product_id) DO UPDATE SET enabled = 1`).bind(groupBuy.id, productId));
@@ -698,7 +700,8 @@ async function getFlexContext(env, payload) {
     const productId = String(payload?.product_id || "").trim();
     if (!groupId || !groupBuyId || !productId) return { error: "LINE 群組、團購與商品皆為必填", status: 400 };
     const row = await env.DB.prepare(`SELECT gb.id AS group_buy_id, gb.name AS group_buy_name, gb.ends_at, gb.status AS group_buy_status,
-        p.id AS product_id, p.name AS product_name, p.specs, p.unit, p.price, p.image_url, p.enabled AS product_enabled
+        p.id AS product_id, p.name AS product_name, p.specs, p.unit, p.price, p.image_url, p.enabled AS product_enabled,
+        gbp.stock_enabled, gbp.sellable_quantity
         FROM group_buys gb JOIN group_buy_products gbp ON gbp.group_buy_id = gb.id AND gbp.enabled = 1
         JOIN products p ON p.id = gbp.product_id WHERE gb.id = ? AND p.id = ? LIMIT 1`).bind(groupBuyId, productId).first();
     if (!row) return { error: "找不到團購商品，請先同步團購與商品", status: 404 };
@@ -706,7 +709,16 @@ async function getFlexContext(env, payload) {
     if (!row.product_enabled) return { error: "商品已停售，無法發布商品卡", status: 409 };
     const flex = LineFlex.buildFlexMessage({
         groupBuy: { id: row.group_buy_id, name: row.group_buy_name, ends_at: row.ends_at },
-        product: { id: row.product_id, name: row.product_name, specs: row.specs, unit: row.unit, price: row.price, image_url: row.image_url },
+        product: {
+            id: row.product_id,
+            name: row.product_name,
+            specs: row.specs,
+            unit: row.unit,
+            price: row.price,
+            image_url: row.image_url,
+            stock_enabled: Boolean(row.stock_enabled),
+            sellable_quantity: Number(row.sellable_quantity || 0)
+        },
         showImage: payload.show_image !== false,
         quantities: payload.quantities,
         liffId: env.LIFF_ID || null
@@ -777,8 +789,11 @@ async function importInboxToActiveGroup(env, inbox) {
     const parsedItems = JSON.parse(inbox.parsed_items || "[]");
     const products = [];
     for (const item of parsedItems) {
-        const product = await env.DB.prepare("SELECT id, line_code, price FROM products WHERE line_code = ? AND enabled = 1 LIMIT 1")
-            .bind(item.productCode).first();
+        const product = await env.DB.prepare(`SELECT p.id, p.line_code, p.price
+            FROM products p JOIN group_buy_products gbp
+              ON gbp.product_id = p.id AND gbp.group_buy_id = ? AND gbp.enabled = 1
+            WHERE p.line_code = ? AND p.enabled = 1 LIMIT 1`)
+            .bind(groupBuy.id, item.productCode).first();
         if (!product) return { error: `商品 ${item.productCode} 不存在或已停售`, status: 409 };
         products.push({ ...product, quantity: item.quantity });
     }
@@ -787,54 +802,63 @@ async function importInboxToActiveGroup(env, inbox) {
         .bind(inbox.customer_id, groupBuy.id).first();
     if (action === "cancel" && !existingOrder) return { error: `找不到可取消的 ${prefix || "商品"} 訂單`, status: 409 };
     const orderId = existingOrder?.id || await stableId("ORD", `${inbox.customer_id}:${groupBuy.id}`);
-    const previousQuantities = new Map();
-    if (existingOrder) {
-        for (const product of products) {
-            const row = await env.DB.prepare("SELECT quantity FROM order_items WHERE order_id = ? AND product_id = ? LIMIT 1")
-                .bind(orderId, product.id).first();
-            previousQuantities.set(product.id, Number(row?.quantity || 0));
+    const existingItems = existingOrder ? (await env.DB.prepare(`SELECT oi.product_id, oi.product_code, oi.quantity, oi.unit_price
+        FROM order_items oi WHERE oi.order_id = ?`).bind(orderId).all()).results : [];
+    const existingByProduct = new Map(existingItems.map(item => [item.product_id, item]));
+    const changesByProduct = new Map();
+
+    if (action === "cancel" || action === "replace") {
+        const matched = existingItems.filter(item =>
+            !prefix || item.product_code === prefix || String(item.product_code || "").startsWith(`${prefix}-`)
+        );
+        if (action === "cancel" && !matched.length) return { error: `找不到可取消的 ${prefix || "商品"} 訂單`, status: 409 };
+        for (const item of matched) {
+            if (!item.product_id) continue;
+            changesByProduct.set(item.product_id, {
+                productId: item.product_id,
+                productCode: item.product_code || item.product_id,
+                quantity: 0,
+                unitPrice: Number(item.unit_price || 0)
+            });
         }
     }
-    const statements = [
-        env.DB.prepare(`INSERT OR IGNORE INTO orders
+    if (action !== "cancel") {
+        for (const product of products) {
+            const before = Number(existingByProduct.get(product.id)?.quantity || 0);
+            changesByProduct.set(product.id, {
+                productId: product.id,
+                productCode: product.line_code || product.id,
+                quantity: action === "create" ? before + Number(product.quantity || 0) : Number(product.quantity || 0),
+                unitPrice: Number(product.price || 0)
+            });
+        }
+    }
+    const changes = [...changesByProduct.values()];
+    if (!changes.length) return { error: "沒有可轉入的正式訂單商品", status: 409 };
+
+    const preStatements = [];
+    if (action !== "cancel") {
+        preStatements.push(env.DB.prepare(`INSERT OR IGNORE INTO orders
             (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
             VALUES (?, ?, ?, ?, '新訂單', ?, ?, 0, CURRENT_TIMESTAMP)`)
-            .bind(orderId, inbox.message_id, inbox.customer_id, inbox.pickup_type || "", groupBuy.id, inbox.group_id)
-    ];
-    if (action === "cancel") {
-        statements.push(env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND (product_code = ? OR product_code LIKE ?)")
-            .bind(orderId, prefix, `${prefix}-%`));
-    } else {
-        if (action === "replace") {
-            statements.push(env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND (product_code = ? OR product_code LIKE ?)")
-                .bind(orderId, prefix, `${prefix}-%`));
-        }
-        for (const product of products) {
-            const conflictUpdate = action === "create"
-                ? "quantity = order_items.quantity + excluded.quantity, amount = (order_items.quantity + excluded.quantity) * excluded.unit_price"
-                : "quantity = excluded.quantity, amount = excluded.amount";
-            statements.push(env.DB.prepare(`INSERT INTO order_items
-                (order_id, product_code, product_id, quantity, unit_price, amount, item_status, updated_at)
-                VALUES (?, ?, ?, ?, ?, ? * ?, 'active', CURRENT_TIMESTAMP)
-                ON CONFLICT(order_id, product_id) DO UPDATE SET ${conflictUpdate}, unit_price = excluded.unit_price,
-                product_code = excluded.product_code, item_status = 'active', updated_at = CURRENT_TIMESTAMP`)
-                .bind(orderId, product.line_code || product.id, product.id, product.quantity, product.price, product.price, product.quantity));
-            const before = previousQuantities.get(product.id) || 0;
-            const after = action === "create" ? before + product.quantity : product.quantity;
-            statements.push(env.DB.prepare(`INSERT INTO order_change_logs
-                (id, order_id, customer_id, group_buy_id, product_id, action, quantity_before, quantity_after, source_type, webhook_event_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'line_text', ?)`)
-                .bind(crypto.randomUUID(), orderId, inbox.customer_id, groupBuy.id, product.id, action, before, after, inbox.webhook_event_id || null));
-        }
+            .bind(orderId, inbox.message_id, inbox.customer_id, inbox.pickup_type || "", groupBuy.id, inbox.group_id));
     }
-    statements.push(
-        env.DB.prepare(`UPDATE orders SET total_amount = COALESCE((SELECT SUM(amount) FROM order_items WHERE order_id = ?), 0),
-            status = CASE WHEN EXISTS(SELECT 1 FROM order_items WHERE order_id = ?) THEN '新訂單' ELSE '已取消' END,
-            updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(orderId, orderId, orderId),
-        env.DB.prepare("UPDATE line_order_inbox SET status = ?, processed_at = CURRENT_TIMESTAMP, related_order_id = ? WHERE message_id = ?")
-            .bind(action === "cancel" ? LineOrder.STATUS.CANCELLED : LineOrder.STATUS.IMPORTED, orderId, inbox.message_id)
-    );
-    await env.DB.batch(statements);
+    await Inventory.executeOrderMutation(env, {
+        orderId,
+        groupBuyId: groupBuy.id,
+        customerId: inbox.customer_id,
+        changes,
+        sourceType: "line_text",
+        webhookEventId: inbox.webhook_event_id || null,
+        preStatements,
+        activeStatus: "新訂單",
+        pickupType: inbox.pickup_type || null,
+        notes: "LINE 文字訂單確認轉正式訂單",
+        postStatements: [
+            env.DB.prepare("UPDATE line_order_inbox SET status = ?, processed_at = CURRENT_TIMESTAMP, related_order_id = ? WHERE message_id = ?")
+                .bind(action === "cancel" ? LineOrder.STATUS.CANCELLED : LineOrder.STATUS.IMPORTED, orderId, inbox.message_id)
+        ]
+    });
     return { imported: true, action, orderId, groupBuyId: groupBuy.id };
 }
 
@@ -880,6 +904,401 @@ async function importInboxRecord(env, inbox) {
     return { imported: true, action, orderId };
 }
 
+function inventoryErrorJson(error) {
+    return json({
+        error: error.code || "INVENTORY_ERROR",
+        message: error.message,
+        remainingQuantity: error.remainingQuantity,
+        requestedQuantity: error.requestedQuantity,
+        soldQuantity: error.soldQuantity,
+        sellableQuantity: error.sellableQuantity
+    }, error.status || 500);
+}
+
+async function handleInventoryRoutes(request, env, url) {
+    try {
+        const stockList = url.pathname.match(/^\/api\/group-buys\/([^/]+)\/stock$/);
+        if (stockList && request.method === "GET") {
+            return json({ stocks: await Inventory.listStock(env, decodeURIComponent(stockList[1])) });
+        }
+        const stockItem = url.pathname.match(/^\/api\/group-buys\/([^/]+)\/stock\/([^/]+)$/);
+        if (stockItem && request.method === "PUT") {
+            const payload = await readJson(request);
+            if (!payload) return json({ error: "INVALID_JSON", message: "JSON 格式錯誤" }, 400);
+            const stock = await Inventory.configureStock(
+                env,
+                decodeURIComponent(stockItem[1]),
+                decodeURIComponent(stockItem[2]),
+                payload
+            );
+            return json({ stock });
+        }
+        const adjust = url.pathname.match(/^\/api\/group-buys\/([^/]+)\/stock\/([^/]+)\/adjust$/);
+        if (adjust && request.method === "POST") {
+            const payload = await readJson(request);
+            if (!payload) return json({ error: "INVALID_JSON", message: "JSON 格式錯誤" }, 400);
+            const stock = await Inventory.adjustStock(
+                env,
+                decodeURIComponent(adjust[1]),
+                decodeURIComponent(adjust[2]),
+                payload
+            );
+            return json({ stock });
+        }
+        const reconcile = url.pathname.match(/^\/api\/group-buys\/([^/]+)\/stock\/reconcile$/);
+        if (reconcile && request.method === "GET") {
+            return json({ differences: await Inventory.reconciliationPreview(env, decodeURIComponent(reconcile[1])) });
+        }
+        if (reconcile && request.method === "POST") {
+            const payload = await readJson(request);
+            if (!payload) return json({ error: "INVALID_JSON", message: "JSON 格式錯誤" }, 400);
+            return json(await Inventory.applyReconciliation(env, decodeURIComponent(reconcile[1]), payload));
+        }
+        if (request.method === "GET" && url.pathname === "/api/inventory/alerts") {
+            const groupBuyId = String(url.searchParams.get("group_buy_id") || "").trim();
+            if (!groupBuyId) return json({ error: "MISSING_GROUP_BUY", message: "缺少團購編號" }, 400);
+            const stocks = await Inventory.listStock(env, groupBuyId);
+            return json({
+                lowStock: stocks.filter(stock => stock.stockEnabled && stock.stockStatus === "low_stock"),
+                soldOut: stocks.filter(stock => stock.stockEnabled && stock.stockStatus === "sold_out")
+            });
+        }
+        if (request.method === "GET" && url.pathname === "/api/inventory/movements") {
+            const groupBuyId = String(url.searchParams.get("group_buy_id") || "").trim();
+            if (!groupBuyId) return json({ error: "MISSING_GROUP_BUY", message: "缺少團購編號" }, 400);
+            const result = await env.DB.prepare(`SELECT * FROM inventory_movements
+                WHERE group_buy_id = ? ORDER BY created_at DESC LIMIT 1000`).bind(groupBuyId).all();
+            return json({ movements: result.results });
+        }
+        return null;
+    } catch (error) {
+        if (error instanceof Inventory.InventoryHttpError) return inventoryErrorJson(error);
+        throw error;
+    }
+}
+
+const ORDER_STATUSES = new Set(["新訂單", "已確認", "已包貨", "已完成", "已取消"]);
+const PAYMENT_STATUSES = new Set(["未付款", "已付款"]);
+
+async function normalizeOrderItems(env, groupBuyId, items) {
+    if (!Array.isArray(items) || !items.length) {
+        throw new Inventory.InventoryHttpError(400, "INVALID_ORDER_ITEMS", "訂單至少需要一項商品");
+    }
+    const seen = new Set();
+    const normalized = [];
+    for (const item of items) {
+        const productId = String(item.productId || item.product_id || "").trim();
+        if (!productId || seen.has(productId)) {
+            throw new Inventory.InventoryHttpError(400, "INVALID_ORDER_ITEMS", "訂單商品不可空白或重複");
+        }
+        seen.add(productId);
+        const product = await env.DB.prepare(`SELECT p.id, p.line_code, p.price, gbp.enabled AS group_enabled
+            FROM products p JOIN group_buy_products gbp ON gbp.product_id = p.id
+            WHERE gbp.group_buy_id = ? AND p.id = ? LIMIT 1`).bind(groupBuyId, productId).first();
+        if (!product || !product.group_enabled) {
+            throw new Inventory.InventoryHttpError(409, "PRODUCT_NOT_IN_GROUP", `商品 ${productId} 不屬於此團購`);
+        }
+        const quantity = Number(item.quantity);
+        const unitPrice = item.unitPrice ?? item.unit_price ?? product.price;
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) {
+            throw new Inventory.InventoryHttpError(400, "INVALID_ORDER_ITEMS", `${productId} 數量必須是 1 以上的整數`);
+        }
+        if (!Number.isInteger(Number(unitPrice)) || Number(unitPrice) < 0) {
+            throw new Inventory.InventoryHttpError(400, "INVALID_ORDER_ITEMS", `${productId} 單價必須是 0 以上的整數`);
+        }
+        normalized.push({
+            productId,
+            productCode: product.line_code || product.id,
+            quantity,
+            unitPrice: Number(unitPrice)
+        });
+    }
+    return normalized;
+}
+
+async function readAdminOrder(env, orderId) {
+    const order = await env.DB.prepare(`SELECT * FROM orders WHERE id = ? LIMIT 1`).bind(orderId).first();
+    if (!order) return null;
+    const items = (await env.DB.prepare(`SELECT oi.*, p.name AS product_name, p.specs, p.unit
+        FROM order_items oi LEFT JOIN products p ON p.id = oi.product_id
+        WHERE oi.order_id = ? ORDER BY oi.id`).bind(orderId).all()).results;
+    return { ...order, items };
+}
+
+async function upsertAdminOrder(request, env, orderId) {
+    const payload = await readJson(request);
+    if (!payload) return json({ error: "INVALID_JSON", message: "JSON 格式錯誤" }, 400);
+    const requestId = String(payload.requestId || payload.request_id || "").trim();
+    const groupBuyId = String(payload.groupBuyId || payload.group_buy_id || "").trim();
+    const customerId = String(payload.customerId || payload.customer_id || "").trim();
+    const pickupType = String(payload.pickupType || payload.pickup_type || "").trim();
+    const orderStatus = String(payload.orderStatus || payload.status || "新訂單").trim();
+    const paymentStatus = String(payload.paymentStatus || payload.payment_status || "未付款").trim();
+    if (!requestId) return json({ error: "REQUEST_ID_REQUIRED", message: "缺少 requestId" }, 400);
+    if (!/^[A-Za-z0-9_-]{3,100}$/.test(orderId)) return json({ error: "INVALID_ORDER_ID", message: "訂單編號格式錯誤" }, 400);
+    if (!groupBuyId || !customerId) return json({ error: "INVALID_ORDER", message: "團購與客戶必填" }, 400);
+    if (!new Set(["自取", "外送"]).has(pickupType)) return json({ error: "INVALID_PICKUP_TYPE", message: "取貨方式錯誤" }, 400);
+    if (!ORDER_STATUSES.has(orderStatus)) return json({ error: "INVALID_ORDER_STATUS", message: "訂單狀態錯誤" }, 400);
+    if (!PAYMENT_STATUSES.has(paymentStatus)) return json({ error: "INVALID_PAYMENT_STATUS", message: "付款狀態錯誤" }, 400);
+
+    const customer = await env.DB.prepare("SELECT id FROM customers WHERE id = ? LIMIT 1").bind(customerId).first();
+    if (!customer) return json({ error: "CUSTOMER_NOT_FOUND", message: "找不到客戶" }, 404);
+    const groupBuy = await env.DB.prepare("SELECT id FROM group_buys WHERE id = ? LIMIT 1").bind(groupBuyId).first();
+    if (!groupBuy) return json({ error: "GROUP_BUY_NOT_FOUND", message: "找不到團購活動" }, 404);
+    const existing = await readAdminOrder(env, orderId);
+    if (existing && (existing.group_buy_id !== groupBuyId || existing.customer_id !== customerId)) {
+        return json({ error: "ORDER_IDENTITY_LOCKED", message: "既有訂單不可更換團購或客戶，請另建新訂單" }, 409);
+    }
+
+    let requestedItems = [];
+    if (orderStatus !== "已取消") {
+        requestedItems = await normalizeOrderItems(env, groupBuyId, payload.items);
+    }
+    const existingItems = existing?.items || [];
+    const changes = new Map(existingItems
+        .filter(item => item.product_id)
+        .map(item => [item.product_id, {
+            productId: item.product_id,
+            productCode: item.product_code || item.product_id,
+            quantity: 0,
+            unitPrice: Number(item.unit_price || 0)
+        }]));
+    for (const item of requestedItems) changes.set(item.productId, item);
+    if (!changes.size) {
+        if (existing) {
+            await env.DB.prepare(`UPDATE orders SET payment_status = ?, notes = ?, phone_snapshot = ?,
+                address_snapshot = ?, pickup_type = ?, status = '已取消', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?`).bind(
+                paymentStatus,
+                String(payload.notes || "").trim().slice(0, 500) || null,
+                String(payload.phone || "").trim().slice(0, 50) || null,
+                String(payload.address || "").trim().slice(0, 200) || null,
+                pickupType,
+                orderId
+            ).run();
+            return json({ order: await readAdminOrder(env, orderId), duplicate: false });
+        }
+        return json({ error: "INVALID_ORDER_ITEMS", message: "新訂單至少需要一項商品" }, 400);
+    }
+
+    const sourceMessageId = `admin:${orderId}`;
+    const preStatements = [
+        env.DB.prepare(`INSERT OR IGNORE INTO line_order_inbox
+            (message_id, group_id, line_user_id, display_name, customer_id, raw_message,
+             normalized_message, parsed_items, action, pickup_type, message_time, status, processed_at, related_order_id)
+            VALUES (?, '', '', '', ?, '後台手動正式訂單', '後台手動正式訂單', '[]', 'replace',
+                ?, CURRENT_TIMESTAMP, '已轉正式訂單', CURRENT_TIMESTAMP, ?)`)
+            .bind(sourceMessageId, customerId, pickupType, orderId),
+        env.DB.prepare(`INSERT OR IGNORE INTO orders
+            (id, source_message_id, customer_id, pickup_type, status, group_buy_id,
+             total_amount, payment_status, notes, phone_snapshot, address_snapshot, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, CURRENT_TIMESTAMP)`)
+            .bind(
+                orderId, sourceMessageId, customerId, pickupType,
+                orderStatus === "已取消" ? "新訂單" : orderStatus,
+                groupBuyId, paymentStatus,
+                String(payload.notes || "").trim().slice(0, 500) || null,
+                String(payload.phone || "").trim().slice(0, 50) || null,
+                String(payload.address || "").trim().slice(0, 200) || null
+            ),
+        env.DB.prepare(`UPDATE orders SET pickup_type = ?, payment_status = ?, notes = ?,
+            phone_snapshot = ?, address_snapshot = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+            .bind(
+                pickupType, paymentStatus,
+                String(payload.notes || "").trim().slice(0, 500) || null,
+                String(payload.phone || "").trim().slice(0, 50) || null,
+                String(payload.address || "").trim().slice(0, 200) || null,
+                orderId
+            )
+    ];
+    try {
+        const result = await Inventory.executeOrderMutation(env, {
+            orderId,
+            groupBuyId,
+            customerId,
+            changes: [...changes.values()],
+            sourceType: "admin",
+            requestId,
+            preStatements,
+            activeStatus: orderStatus === "已取消" ? "新訂單" : orderStatus,
+            pickupType,
+            notes: existing ? "後台修改正式訂單" : "後台新增正式訂單"
+        });
+        return json({ order: await readAdminOrder(env, orderId), duplicate: result.duplicate });
+    } catch (error) {
+        if (error instanceof Inventory.InventoryHttpError) return inventoryErrorJson(error);
+        throw error;
+    }
+}
+
+async function normalizeExcelRows(env, payload) {
+    const groupBuyId = String(payload?.groupBuyId || payload?.group_buy_id || "").trim();
+    const rows = Array.isArray(payload?.rows) ? payload.rows : [];
+    if (!groupBuyId) throw new Inventory.InventoryHttpError(400, "MISSING_GROUP_BUY", "缺少團購編號");
+    if (!rows.length || rows.length > 500) {
+        throw new Inventory.InventoryHttpError(400, "INVALID_EXCEL_ROWS", "Excel 匯入需包含 1 到 500 列");
+    }
+    const grouped = new Map();
+    for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index] || {};
+        const customerId = String(row.customerId || row.customer_id || row["客戶編號"] || "").trim();
+        const productId = String(row.productId || row.product_id || row["商品編號"] || "").trim();
+        const pickupType = String(row.pickupType || row.pickup_type || row["取貨方式"] || "自取").trim();
+        const quantity = Number(row.quantity ?? row["數量"]);
+        if (!customerId || !productId || !new Set(["自取", "外送"]).has(pickupType)
+            || !Number.isInteger(quantity) || quantity < 1) {
+            throw new Inventory.InventoryHttpError(400, "INVALID_EXCEL_ROWS", `Excel 第 ${index + 2} 列格式錯誤`);
+        }
+        const customer = await env.DB.prepare("SELECT id FROM customers WHERE id = ? LIMIT 1").bind(customerId).first();
+        if (!customer) throw new Inventory.InventoryHttpError(409, "CUSTOMER_NOT_FOUND", `Excel 第 ${index + 2} 列找不到客戶 ${customerId}`);
+        const product = (await normalizeOrderItems(env, groupBuyId, [{
+            productId,
+            quantity,
+            unitPrice: row.unitPrice ?? row.unit_price ?? row["單價"]
+        }]))[0];
+        const key = customerId;
+        if (!grouped.has(key)) grouped.set(key, { customerId, pickupType, items: new Map() });
+        const group = grouped.get(key);
+        if (group.pickupType !== pickupType) {
+            throw new Inventory.InventoryHttpError(409, "INVALID_EXCEL_ROWS", `客戶 ${customerId} 同一批匯入不可混用取貨方式`);
+        }
+        const prior = group.items.get(productId);
+        group.items.set(productId, { ...product, quantity: Number(prior?.quantity || 0) + quantity });
+    }
+    return { groupBuyId, groups: [...grouped.values()] };
+}
+
+async function previewExcelImport(env, payload) {
+    const normalized = await normalizeExcelRows(env, payload);
+    const demand = new Map();
+    const groupDetails = [];
+    for (const group of normalized.groups) {
+        const existingOrder = await env.DB.prepare(`SELECT id FROM orders
+            WHERE customer_id = ? AND group_buy_id = ? LIMIT 1`)
+            .bind(group.customerId, normalized.groupBuyId).first();
+        const orderId = existingOrder?.id || await stableId("XLS", `${normalized.groupBuyId}:${group.customerId}`);
+        const currentRows = existingOrder ? (await env.DB.prepare(`SELECT product_id, quantity
+            FROM order_items WHERE order_id = ?`).bind(orderId).all()).results : [];
+        const current = new Map(currentRows.map(row => [row.product_id, Number(row.quantity || 0)]));
+        for (const item of group.items.values()) {
+            const delta = item.quantity - Number(current.get(item.productId) || 0);
+            demand.set(item.productId, Number(demand.get(item.productId) || 0) + Math.max(0, delta));
+        }
+        groupDetails.push({ ...group, orderId, existing: Boolean(existingOrder) });
+    }
+    const stockChecks = [];
+    let valid = true;
+    for (const [productId, requestedIncrease] of demand) {
+        const row = await Inventory.getStock(env, normalized.groupBuyId, productId);
+        const stock = Inventory.publicStock(row);
+        const enough = !stock.stockEnabled || stock.remainingQuantity >= requestedIncrease;
+        valid = valid && enough;
+        stockChecks.push({
+            productId,
+            productCode: stock.productCode,
+            productName: stock.productName,
+            stockEnabled: stock.stockEnabled,
+            remainingQuantity: stock.remainingQuantity,
+            requestedIncrease,
+            shortageQuantity: enough ? 0 : requestedIncrease - stock.remainingQuantity,
+            status: !stock.stockEnabled ? "stock_not_enabled"
+                : stock.remainingQuantity <= 0 ? "sold_out"
+                    : enough ? "ready" : "insufficient_stock"
+        });
+    }
+    return { ...normalized, groupDetails, stockChecks, valid };
+}
+
+function publicExcelPreview(preview) {
+    return {
+        groupBuyId: preview.groupBuyId,
+        orderCount: preview.groupDetails.length,
+        rowCount: preview.groupDetails.reduce((sum, group) => sum + group.items.size, 0),
+        orders: preview.groupDetails.map(group => ({
+            customerId: group.customerId,
+            pickupType: group.pickupType,
+            orderId: group.orderId,
+            existing: group.existing,
+            items: [...group.items.values()]
+        })),
+        stockChecks: preview.stockChecks,
+        valid: preview.valid
+    };
+}
+
+async function confirmExcelImport(env, payload) {
+    const requestId = String(payload?.requestId || payload?.request_id || "").trim();
+    if (!requestId) throw new Inventory.InventoryHttpError(400, "REQUEST_ID_REQUIRED", "缺少 requestId");
+    const preview = await previewExcelImport(env, payload);
+    if (!preview.valid) {
+        const failed = preview.stockChecks.find(check => !new Set(["ready", "stock_not_enabled"]).has(check.status));
+        throw new Inventory.InventoryHttpError(
+            409,
+            failed.status === "sold_out" ? "SOLD_OUT" : "INSUFFICIENT_STOCK",
+            failed.status === "sold_out" ? "本商品已售完" : "商品剩餘數量不足",
+            { remainingQuantity: failed.remainingQuantity, requestedQuantity: failed.requestedIncrease }
+        );
+    }
+    const entries = [];
+    for (const group of preview.groupDetails) {
+        const sourceMessageId = `excel:${group.orderId}`;
+        const preStatements = [
+            env.DB.prepare(`INSERT OR IGNORE INTO line_order_inbox
+                (message_id, group_id, line_user_id, display_name, customer_id, raw_message,
+                 normalized_message, parsed_items, action, pickup_type, message_time, status, processed_at, related_order_id)
+                VALUES (?, '', '', '', ?, 'Excel 正式匯入', 'Excel 正式匯入', '[]', 'replace',
+                    ?, CURRENT_TIMESTAMP, '已轉正式訂單', CURRENT_TIMESTAMP, ?)`)
+                .bind(sourceMessageId, group.customerId, group.pickupType, group.orderId),
+            env.DB.prepare(`INSERT OR IGNORE INTO orders
+                (id, source_message_id, customer_id, pickup_type, status, group_buy_id, total_amount, updated_at)
+                VALUES (?, ?, ?, ?, '新訂單', ?, 0, CURRENT_TIMESTAMP)`)
+                .bind(group.orderId, sourceMessageId, group.customerId, group.pickupType, preview.groupBuyId)
+        ];
+        const options = {
+            orderId: group.orderId,
+            groupBuyId: preview.groupBuyId,
+            customerId: group.customerId,
+            changes: [...group.items.values()],
+            sourceType: "excel_import",
+            preStatements,
+            activeStatus: "新訂單",
+            pickupType: group.pickupType,
+            notes: "Excel 正式確認匯入",
+            requestKeyPrefix: `${requestId}:${group.orderId}`
+        };
+        entries.push({ prepared: await Inventory.prepareOrderMutation(env, options), options });
+    }
+    const result = await Inventory.executePreparedMutations(env, entries, {
+        requestId,
+        sourceType: "excel_import"
+    });
+    return { importedOrders: preview.groupDetails.length, duplicate: result.duplicate, stockChecks: preview.stockChecks };
+}
+
+async function handleOrderMutationRoutes(request, env, url) {
+    const adminMatch = url.pathname.match(/^\/api\/admin\/orders\/([^/]+)$/);
+    if (adminMatch && request.method === "PUT") {
+        return upsertAdminOrder(request, env, decodeURIComponent(adminMatch[1]));
+    }
+    if (request.method === "POST" && url.pathname === "/api/orders/import/preview") {
+        try {
+            return json(publicExcelPreview(await previewExcelImport(env, await readJson(request))));
+        } catch (error) {
+            if (error instanceof Inventory.InventoryHttpError) return inventoryErrorJson(error);
+            throw error;
+        }
+    }
+    if (request.method === "POST" && url.pathname === "/api/orders/import/confirm") {
+        try {
+            return json(await confirmExcelImport(env, await readJson(request)));
+        } catch (error) {
+            if (error instanceof Inventory.InventoryHttpError) return inventoryErrorJson(error);
+            throw error;
+        }
+    }
+    return null;
+}
+
 async function routeRequest(request, env, context) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname === "/webhook/line") return handleWebhook(request, env, context, createDependencies(env));
@@ -896,6 +1315,14 @@ async function routeRequest(request, env, context) {
     }
     if (url.pathname.startsWith("/api/customers")) {
         const handled = await handleCustomerRoutes(request, env, url);
+        if (handled) return handled;
+    }
+    if (url.pathname.startsWith("/api/group-buys/") || url.pathname.startsWith("/api/inventory/")) {
+        const handled = await handleInventoryRoutes(request, env, url);
+        if (handled) return handled;
+    }
+    if (url.pathname.startsWith("/api/admin/orders/") || url.pathname.startsWith("/api/orders/import/")) {
+        const handled = await handleOrderMutationRoutes(request, env, url);
         if (handled) return handled;
     }
     if (request.method === "PUT" && /^\/api\/group-buys\/[^/]+$/.test(url.pathname)) {
@@ -936,7 +1363,8 @@ async function routeRequest(request, env, context) {
         // customer_display_name：團主自訂名稱 > LINE 原始名稱 > legacy nickname（找不到客戶時為 null，
         // 由前端再回退訂單歷史名稱）。customer_nickname 保留 legacy 欄位供舊版前端相容。
         const ordersResult = await env.DB.prepare(`SELECT o.id, o.customer_id, o.group_buy_id, o.pickup_type, o.status,
-                o.total_amount, o.created_at, o.updated_at,
+                o.total_amount, o.payment_status, o.notes, o.phone_snapshot, o.address_snapshot,
+                o.created_at, o.updated_at,
                 c.nickname AS customer_nickname,
                 ${CustomerName.resolvedNameSql("c")} AS customer_display_name,
                 c.custom_display_name, c.line_display_name,
@@ -944,9 +1372,11 @@ async function routeRequest(request, env, context) {
             FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
             WHERE o.group_buy_id = ? ORDER BY o.created_at LIMIT 1000`).bind(groupBuyId).all();
         const itemsResult = await env.DB.prepare(`SELECT i.order_id, i.product_id, i.product_code, i.quantity,
-                i.unit_price, i.amount, i.item_status, p.name AS product_name, p.specs, p.unit
+                i.unit_price, i.amount, i.item_status, p.name AS product_name, p.specs, p.unit,
+                gbp.stock_enabled, gbp.remaining_quantity, gbp.stock_status
             FROM order_items i JOIN orders o ON o.id = i.order_id
             LEFT JOIN products p ON p.id = i.product_id
+            LEFT JOIN group_buy_products gbp ON gbp.group_buy_id = o.group_buy_id AND gbp.product_id = i.product_id
             WHERE o.group_buy_id = ? LIMIT 5000`).bind(groupBuyId).all();
         return json({ orders: ordersResult.results, items: itemsResult.results });
     }

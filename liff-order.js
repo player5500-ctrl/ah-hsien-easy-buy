@@ -20,6 +20,7 @@
         action: "",
         quantity: 1,
         product: null,             // { id,name,specs,unit,image_url,price,pickup_price,delivery_price }
+        stock: null,
         order: null,               // 我的目前訂單
         stats: null,
         pickupType: "自取",
@@ -38,6 +39,8 @@
         statsFail: "目前無法讀取訂購統計",
         noCustomer: "客戶資料尚未綁定",
         noAddress: "外送地址尚未設定",
+        insufficient: "很抱歉，此商品剩餘數量不足",
+        soldOut: "很抱歉，此商品剛剛已售完",
         network: "網路連線異常"
     };
 
@@ -127,12 +130,18 @@
             .then(function (body) {
                 if (res.ok) return body;
                 var raw = body && typeof body.error === "string" ? body.error : "";
+                var message = body && typeof body.message === "string" ? body.message : "";
                 if (res.status === 401) throw new AppError(ALLOWED_ERRORS.auth, { isAuth: true });
                 if (res.status === 404) throw new AppError(ALLOWED_ERRORS.notFound);
                 if (res.status === 409) {
+                    if (raw === "SOLD_OUT") throw new AppError(ALLOWED_ERRORS.soldOut);
+                    if (raw === "INSUFFICIENT_STOCK") throw new AppError(
+                        body.remainingQuantity == null ? ALLOWED_ERRORS.insufficient
+                            : ALLOWED_ERRORS.insufficient + "（目前剩餘 " + body.remainingQuantity + " 組）"
+                    );
                     if (/截止/.test(raw)) throw new AppError(ALLOWED_ERRORS.expired);
                     if (/停售|未開放/.test(raw)) throw new AppError(ALLOWED_ERRORS.closed);
-                    if (/地址/.test(raw)) throw new AppError(ALLOWED_ERRORS.noAddress);
+                    if (/地址/.test(raw + message)) throw new AppError(ALLOWED_ERRORS.noAddress);
                     throw new AppError(fallbackMessage || ALLOWED_ERRORS.saveFail);
                 }
                 // 其他狀態一律回退安全訊息，絕不外露 raw 內容
@@ -227,6 +236,7 @@
             if (gbStatus === "expired") throw new AppError(ALLOWED_ERRORS.expired);
             if (gbStatus === "closed") throw new AppError(ALLOWED_ERRORS.closed);
             state.product = data.product;
+            state.stock = data.stock || null;
             state.stats = data.stats || null;
         });
     }
@@ -257,6 +267,16 @@
         if (!Number.isInteger(q) || q < 1) return 1;
         if (q > 99) return 99;
         return q;
+    }
+
+    function currentItemQuantity() {
+        var mine = state.productId ? findMyItem(state.productId) : null;
+        return mine ? Number(mine.quantity) || 0 : 0;
+    }
+
+    function maxAvailableQuantity() {
+        if (!state.stock || !state.stock.stockEnabled) return 99;
+        return Math.max(0, Number(state.stock.remainingQuantity || 0) + currentItemQuantity());
     }
 
     // 取消品項 / 整張訂單後，回到主訂購畫面並讓「確認訂購」可再次使用。
@@ -298,6 +318,17 @@
         text("product-price", ntd(effectivePrice(p, state.pickupType)));
         text("product-unit", "/ " + (p.unit || "份"));
         text("price-hint", state.pickupType === "外送" ? "（外送價）" : "（自取價）");
+        var currentQty = currentItemQuantity();
+        var maxQty = maxAvailableQuantity();
+        var soldOut = Boolean(state.stock && state.stock.stockEnabled && state.stock.remainingQuantity <= 0);
+        var stockMessage = !state.stock || !state.stock.stockEnabled ? "不限量"
+            : soldOut ? "本商品已售完"
+                : state.stock.stockStatus === "low_stock"
+                    ? "即將售完，目前剩餘 " + state.stock.remainingQuantity + " 組"
+                    : "庫存充足，目前剩餘 " + state.stock.remainingQuantity + " 組";
+        text("stock-status", stockMessage);
+        $("stock-status").className = "stock-status " + (soldOut ? "stock-sold-out"
+            : state.stock && state.stock.stockStatus === "low_stock" ? "stock-low" : "stock-in");
 
         // 取貨方式按鈕
         var btns = document.querySelectorAll(".pickup-btn");
@@ -316,11 +347,11 @@
 
         text("qty-value", String(state.quantity));
         $("qty-minus").disabled = state.quantity <= 1 || state.submitting;
-        $("qty-plus").disabled = state.quantity >= 99 || state.submitting;
+        $("qty-plus").disabled = state.quantity >= maxQty || state.submitting || soldOut;
 
         text("subtotal", ntd(effectivePrice(p, state.pickupType) * state.quantity));
 
-        $("confirm-btn").disabled = state.submitting || needAddress;
+        $("confirm-btn").disabled = state.submitting || needAddress || (soldOut && state.quantity >= currentQty);
         $("confirm-btn").textContent = state.submitting ? "訂購中…" : "確認訂購";
     }
 
@@ -396,7 +427,7 @@
         });
         $("qty-plus").addEventListener("click", function () {
             if (state.submitting) return;
-            state.quantity = clampQty(state.quantity + 1);
+            state.quantity = Math.min(maxAvailableQuantity(), clampQty(state.quantity + 1));
             renderOrderPanel();
         });
         $("address-input").addEventListener("input", function () {
@@ -404,7 +435,11 @@
             // 打字即時更新提示與確認鈕，但不整頁重繪（避免游標跳動）。
             var needAddress = state.pickupType === "外送" && String(state.address).trim() === "";
             $("address-hint").classList.toggle("hidden", !needAddress);
-            if (state.product && state.productId) $("confirm-btn").disabled = state.submitting || needAddress;
+            if (state.product && state.productId) {
+                var soldOut = Boolean(state.stock && state.stock.stockEnabled && state.stock.remainingQuantity <= 0);
+                $("confirm-btn").disabled = state.submitting || needAddress
+                    || (soldOut && state.quantity >= currentItemQuantity());
+            }
         });
         $("confirm-btn").addEventListener("click", onConfirm);
         $("cancel-btn").addEventListener("click", function () { closeWindow(); });
@@ -445,6 +480,7 @@
         .then(function (data) {
             state.order = (data && data.order) || state.order;
             state.stats = (data && data.stats) || state.stats;
+            state.stock = (data && data.stock) || state.stock;
             if (state.order && typeof state.order.address === "string") state.address = state.order.address;
             state.hasAddress = detectAddress(state.order) || state.hasAddress;
             state.submitting = false;
@@ -482,6 +518,7 @@
         .then(function (data) {
             state.order = (data && data.order) || state.order;
             state.stats = (data && data.stats) || state.stats;
+            state.stock = (data && data.stock) || state.stock;
             resyncAfterCancel();               // 解鎖 + 重算數量 + 回主畫面，確認鈕可再次使用
             if (fromSuccess) scrollTop();
         })
@@ -498,7 +535,10 @@
         .then(function (data) {
             state.order = (data && data.order) || { items: [], pickupType: null, totalAmount: 0 };
             state.stats = (data && data.stats) || state.stats;
-            resyncAfterCancel();               // 解鎖 + 重算數量 + 回主畫面，確認鈕可再次使用
+            if (state.productId) {
+                return loadProduct(state.productId).then(resyncAfterCancel);
+            }
+            resyncAfterCancel();
         })
         .catch(function (e) { state.submitting = false; failFromError(e, true); });
     }

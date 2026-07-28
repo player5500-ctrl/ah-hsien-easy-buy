@@ -42,8 +42,11 @@ let state = {
     customers: [],
     orders: [],
     lineInbox: [],
+    groupBuyStock: {},
+    inventoryMovements: [],
     activeGroupBuyId: "" // 當前選取的團購活動 ID
 };
+let pendingExcelOrderImport = null;
 
 // --- 舊版內建範例資料簽名（僅供一次性清除比對，不再載入為初始資料） ---
 const DEMO_LEGACY = {
@@ -379,8 +382,14 @@ function switchView(viewId, subviewAction = '') {
     // 根據不同頁面載入特定資料
     if (viewId === 'dashboard') {
         renderDashboard();
+        loadGroupBuyStock(state.activeGroupBuyId).then(() => {
+            if (currentViewId === 'dashboard') renderDashboard();
+        });
     } else if (viewId === 'group-buys') {
         renderGroupBuys();
+        loadGroupBuyStock(state.activeGroupBuyId).then(() => {
+            if (currentViewId === 'group-buys') renderGroupBuys();
+        });
     } else if (viewId === 'line-inbox') {
         loadLineInbox();
     } else if (viewId === 'line-settings') {
@@ -400,6 +409,9 @@ function switchView(viewId, subviewAction = '') {
         syncLineOrdersFromCloud().then(result => {
             if (result && result.data && result.data.synced && currentViewId === 'orders') renderOrdersSubview();
         });
+        loadGroupBuyStock(state.activeGroupBuyId).then(() => {
+            if (currentViewId === 'orders') renderOrdersSubview();
+        });
     } else if (viewId === 'customers') {
         renderCustomers();
         // 背景把雲端客戶（含 LINE 自動建立、團主自訂名稱）同步回本機後重新渲染
@@ -408,10 +420,15 @@ function switchView(viewId, subviewAction = '') {
         });
     } else if (viewId === 'products') {
         renderProducts();
+        loadGroupBuyStock(state.activeGroupBuyId).then(() => {
+            if (currentViewId === 'products') renderProducts();
+        });
     } else if (viewId === 'excel') {
         prepareExcelExport();
         // 匯出前先把 LINE 靜默收單訂單同步回本機，避免 Excel 少單
         syncLineOrdersFromCloud();
+        loadGroupBuyStock(state.activeGroupBuyId);
+        loadInventoryMovements(state.activeGroupBuyId);
     }
     
     window.scrollTo(0, 0);
@@ -435,6 +452,7 @@ function onGroupBuyChange(val) {
 function renderCurrentGroupBuySelect() {
     const select = document.getElementById('currentGroupBuySelect');
     const selectExport = document.getElementById('export-group-select');
+    const selectImport = document.getElementById('excel-import-group-select');
     
     let html = "";
     // 依狀態排序：開放 -> 截止 -> 完成
@@ -450,6 +468,7 @@ function renderCurrentGroupBuySelect() {
 
     if (select) select.innerHTML = html;
     if (selectExport) selectExport.innerHTML = html;
+    if (selectImport) selectImport.innerHTML = html;
 }
 
 
@@ -494,6 +513,18 @@ function renderDashboard() {
     // 自取單數
     const pickupCount = activeOrders.filter(o => o.pickupType === "自取").length;
     document.getElementById('stat-pickup').textContent = pickupCount;
+
+    const activeStocks = Object.values(state.groupBuyStock)
+        .filter(stock => stock.groupBuyId === state.activeGroupBuyId && stock.stockEnabled);
+    const lowStocks = activeStocks.filter(stock => stock.stockStatus === 'low_stock');
+    const soldOutStocks = activeStocks.filter(stock => stock.stockStatus === 'sold_out');
+    document.getElementById('dashboard-low-stock-count').textContent = `${lowStocks.length} 項`;
+    document.getElementById('dashboard-sold-out-count').textContent = `${soldOutStocks.length} 項`;
+    const stockRows = rows => rows.map(stock => `<div class="inventory-alert-item">
+        <strong>${escapeHtml(stock.productCode)}</strong>｜${escapeHtml(stock.productName)}｜剩餘 ${stock.remainingQuantity} ${escapeHtml(stock.unit || '份')}
+    </div>`).join('');
+    document.getElementById('dashboard-low-stock-list').innerHTML = stockRows(lowStocks) || '目前沒有即將售完商品';
+    document.getElementById('dashboard-sold-out-list').innerHTML = stockRows(soldOutStocks) || '目前沒有售完商品';
 
     // 首頁表格：尚未完成訂單 (新訂單、已確認、已包貨) - 限前 10 筆
     const incompleteOrders = allActiveOrdersWithCancel
@@ -577,6 +608,7 @@ function renderGroupBuys() {
                             ? '<button class="btn btn-primary btn-sm" disabled style="opacity:1; cursor:default;"><i class="fa-solid fa-circle-check"></i> 目前團購</button>'
                             : `<button class="btn btn-secondary btn-sm" onclick="selectGroupBuyDirectly('${gb.id}')"><i class="fa-solid fa-circle-check"></i> 選定</button>`}
                         <button class="btn btn-teal btn-sm" onclick="copyProductsFromPreviousGroup('${gb.id}')" title="複製前一團的商品列表"><i class="fa-solid fa-copy"></i> 複製前團商品</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openStockReconcileModal('${gb.id}')"><i class="fa-solid fa-scale-balanced"></i> 核對庫存</button>
                         <button class="btn btn-primary btn-sm" onclick="openLinePublishModal('${gb.id}')"><i class="fa-brands fa-line"></i> 發布到 LINE 群組</button>
                     </div>
                 </td>
@@ -614,7 +646,7 @@ function copyProductsFromPreviousGroup(targetGroupId) {
 
 // 團購活動 Modal 控制
 // 團購商品勾選清單（記事本文案與 LINE 商品卡只列本團商品）
-function renderGroupBuyProductChecklist(selectedIds = []) {
+function renderGroupBuyProductChecklist(selectedIds = [], groupBuyId = '') {
     const container = document.getElementById('gb-products');
     if (!container) return;
     if (!state.products.length) {
@@ -622,12 +654,88 @@ function renderGroupBuyProductChecklist(selectedIds = []) {
         return;
     }
     const selected = new Set(selectedIds);
-    container.innerHTML = [...state.products]
+    const rows = [...state.products]
         .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
-        .map(p => `<label style="display:flex; align-items:center; gap:8px; padding:4px 0; cursor:pointer;">
-            <input type="checkbox" class="gb-product-checkbox" value="${escapeHtml(p.id)}" ${selected.has(p.id) ? 'checked' : ''}>
-            <span>${escapeHtml(p.id)}｜${escapeHtml(p.name)}${p.enabled ? '' : '（已停用）'}</span>
-        </label>`).join('');
+        .map(p => {
+            const stock = stockFor(groupBuyId, p.id) || {
+                stockEnabled: false,
+                incomingQuantity: 0,
+                reservedQuantity: 0,
+                sellableQuantity: 0,
+                soldQuantity: 0,
+                remainingQuantity: 0,
+                lowStockThreshold: 5,
+                stockStatus: 'in_stock'
+            };
+            const checked = selected.has(p.id);
+            return `<tr class="gb-stock-row" data-product-id="${escapeHtml(p.id)}">
+                <td><input type="checkbox" class="gb-product-checkbox" value="${escapeHtml(p.id)}"
+                    ${checked ? 'checked' : ''} onchange="toggleGroupBuyStockRow('${escapeHtml(p.id)}')"></td>
+                <td><strong>${escapeHtml(p.id)}</strong><br><small>${escapeHtml(p.name)}${p.enabled ? '' : '（已停用）'}</small></td>
+                <td><input type="checkbox" class="gb-stock-enabled" ${stock.stockEnabled ? 'checked' : ''}
+                    ${checked ? '' : 'disabled'} onchange="updateGroupBuyStockPreview('${escapeHtml(p.id)}')"></td>
+                <td><input type="number" class="form-control gb-stock-incoming" min="0" value="${stock.incomingQuantity}"
+                    ${checked ? '' : 'disabled'} oninput="updateGroupBuyStockPreview('${escapeHtml(p.id)}')"></td>
+                <td><input type="number" class="form-control gb-stock-reserved" min="0" value="${stock.reservedQuantity}"
+                    ${checked ? '' : 'disabled'} oninput="updateGroupBuyStockPreview('${escapeHtml(p.id)}')"></td>
+                <td class="gb-stock-sellable">${stock.sellableQuantity}</td>
+                <td class="gb-stock-sold">${stock.soldQuantity}</td>
+                <td class="gb-stock-remaining">${stock.remainingQuantity}</td>
+                <td><input type="number" class="form-control gb-stock-threshold" min="0" value="${stock.lowStockThreshold}"
+                    ${checked ? '' : 'disabled'} oninput="updateGroupBuyStockPreview('${escapeHtml(p.id)}')"></td>
+                <td class="gb-stock-status">${stockStatusBadge(stock)}</td>
+                <td>${groupBuyId && stock.stockEnabled
+                    ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openStockAdjustModal('${escapeHtml(groupBuyId)}','${escapeHtml(p.id)}')">調整庫存</button>`
+                    : '-'}</td>
+            </tr>`;
+        }).join('');
+    container.innerHTML = `<div class="table-responsive"><table class="table-custom stock-config-table">
+        <thead><tr><th>加入</th><th>商品</th><th>限量</th><th>進貨</th><th>保留</th><th>可賣</th><th>已售</th><th>剩餘</th><th>低庫存</th><th>狀態</th><th>調整</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+}
+
+function groupBuyStockRow(productId) {
+    return [...document.querySelectorAll('.gb-stock-row')].find(row => row.dataset.productId === productId);
+}
+
+function toggleGroupBuyStockRow(productId) {
+    const row = groupBuyStockRow(productId);
+    if (!row) return;
+    const checked = row.querySelector('.gb-product-checkbox').checked;
+    row.querySelectorAll('input:not(.gb-product-checkbox)').forEach(input => { input.disabled = !checked; });
+    updateGroupBuyStockPreview(productId);
+}
+
+function updateGroupBuyStockPreview(productId) {
+    const row = groupBuyStockRow(productId);
+    if (!row) return;
+    const enabled = row.querySelector('.gb-stock-enabled').checked;
+    const incoming = Math.max(0, Number(row.querySelector('.gb-stock-incoming').value) || 0);
+    const reserved = Math.max(0, Number(row.querySelector('.gb-stock-reserved').value) || 0);
+    const sold = Math.max(0, Number(row.querySelector('.gb-stock-sold').textContent) || 0);
+    const threshold = Math.max(0, Number(row.querySelector('.gb-stock-threshold').value) || 0);
+    const sellable = Math.max(0, incoming - reserved);
+    const remaining = Math.max(0, sellable - sold);
+    row.querySelector('.gb-stock-sellable').textContent = sellable;
+    row.querySelector('.gb-stock-remaining').textContent = remaining;
+    row.querySelector('.gb-stock-status').innerHTML = stockStatusBadge({
+        stockEnabled: enabled,
+        remainingQuantity: remaining,
+        lowStockThreshold: threshold,
+        stockStatus: !enabled ? 'in_stock' : remaining <= 0 ? 'sold_out' : remaining <= threshold ? 'low_stock' : 'in_stock'
+    });
+}
+
+function collectGroupBuyStockSettings() {
+    return [...document.querySelectorAll('.gb-stock-row')]
+        .filter(row => row.querySelector('.gb-product-checkbox').checked)
+        .map(row => ({
+            productId: row.dataset.productId,
+            stockEnabled: row.querySelector('.gb-stock-enabled').checked,
+            incomingQuantity: Math.max(0, Number(row.querySelector('.gb-stock-incoming').value) || 0),
+            reservedQuantity: Math.max(0, Number(row.querySelector('.gb-stock-reserved').value) || 0),
+            lowStockThreshold: Math.max(0, Number(row.querySelector('.gb-stock-threshold').value) || 0)
+        }));
 }
 
 // 取得團購綁定的商品；未勾選（舊資料）則回傳所有商品（維持原行為）
@@ -637,7 +745,7 @@ function groupBuyProducts(gb) {
     return state.products.filter(p => ids.includes(p.id));
 }
 
-function openGroupBuyModal(id = '') {
+async function openGroupBuyModal(id = '') {
     const modal = document.getElementById('group-buy-modal');
     const title = document.getElementById('group-buy-modal-title');
     const form = document.getElementById('group-buy-form');
@@ -654,7 +762,9 @@ function openGroupBuyModal(id = '') {
             document.getElementById('gb-end-date').value = gb.endDate;
             document.getElementById('gb-status').value = gb.status;
             document.getElementById('gb-notes').value = gb.notes;
-            renderGroupBuyProductChecklist(gb.productIds || []);
+            renderGroupBuyProductChecklist(gb.productIds || [], id);
+            await loadGroupBuyStock(id);
+            renderGroupBuyProductChecklist(gb.productIds || [], id);
         }
     } else {
         title.textContent = "新增團購活動";
@@ -669,7 +779,7 @@ function closeGroupBuyModal() {
     document.getElementById('group-buy-modal').classList.remove('show');
 }
 
-function saveGroupBuy() {
+async function saveGroupBuy() {
     const id = document.getElementById('group-buy-id').value;
     const name = document.getElementById('gb-name').value.trim();
     const startDate = document.getElementById('gb-start-date').value;
@@ -677,12 +787,19 @@ function saveGroupBuy() {
     const status = document.getElementById('gb-status').value;
     const notes = document.getElementById('gb-notes').value.trim();
     const productIds = [...document.querySelectorAll('.gb-product-checkbox:checked')].map(input => input.value);
+    const stockSettings = collectGroupBuyStockSettings();
 
     if (!name) {
         alert("請輸入團購活動名稱！");
         return;
     }
+    const invalidStock = stockSettings.find(stock => stock.stockEnabled && stock.reservedQuantity > stock.incomingQuantity);
+    if (invalidStock) {
+        alert(`${invalidStock.productId} 的保留數量不可大於進貨數量。`);
+        return;
+    }
 
+    let savedGroupBuy;
     if (id) {
         // 編輯
         const gb = state.groupBuys.find(g => g.id === id);
@@ -693,6 +810,8 @@ function saveGroupBuy() {
             gb.status = status;
             gb.notes = notes;
             gb.productIds = productIds;
+            gb.stockSettings = stockSettings;
+            savedGroupBuy = gb;
         }
     } else {
         // 新增
@@ -702,17 +821,143 @@ function saveGroupBuy() {
             return match ? Math.max(max, parseInt(match[1], 10)) : max;
         }, 0);
         const newId = "GB" + String(maxGbNum + 1).padStart(3, '0');
-        state.groupBuys.push({ id: newId, name, startDate, endDate, status, notes, productIds });
+        savedGroupBuy = { id: newId, name, startDate, endDate, status, notes, productIds, stockSettings };
+        state.groupBuys.push(savedGroupBuy);
         if (state.groupBuys.length === 1) {
             state.activeGroupBuyId = newId;
         }
     }
 
     saveStateToStorage();
+    if (getCloudApiKey()) {
+        const originalButton = document.querySelector('#group-buy-modal .modal-footer .btn-primary');
+        if (originalButton) {
+            originalButton.disabled = true;
+            originalButton.textContent = '儲存中…';
+        }
+        try {
+            for (const productId of productIds) {
+                const product = state.products.find(item => item.id === productId);
+                if (!product) continue;
+                const productResult = await syncProductToCloud(product);
+                if (productResult.error || productResult.skipped) throw new Error(productResult.error || `商品 ${productId} 尚未同步`);
+            }
+            const groupResult = await cloudFetch(`/api/group-buys/${encodeURIComponent(savedGroupBuy.id)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name,
+                    starts_at: groupBuyDateTime(startDate),
+                    ends_at: groupBuyDateTime(endDate, true),
+                    status: groupBuyStatusForCloud(status),
+                    notes: notes || null,
+                    product_ids: productIds
+                })
+            });
+            if (groupResult.error || groupResult.skipped) throw new Error(groupResult.error || '團購同步失敗');
+            for (const stock of stockSettings) {
+                const stockResult = await cloudFetch(`/api/group-buys/${encodeURIComponent(savedGroupBuy.id)}/stock/${encodeURIComponent(stock.productId)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(stock)
+                });
+                if (stockResult.error || stockResult.skipped) throw new Error(`${stock.productId}：${stockResult.error || '庫存同步失敗'}`);
+                state.groupBuyStock[stockKey(savedGroupBuy.id, stock.productId)] = stockResult.data.stock;
+            }
+        } catch (error) {
+            alert(`團購已保存在本機，但雲端庫存同步失敗：${error.message}`);
+            if (originalButton) {
+                originalButton.disabled = false;
+                originalButton.textContent = '儲存活動';
+            }
+            return;
+        }
+        if (originalButton) {
+            originalButton.disabled = false;
+            originalButton.textContent = '儲存活動';
+        }
+    }
     renderCurrentGroupBuySelect();
     closeGroupBuyModal();
     renderGroupBuys();
     if (currentViewId === 'dashboard') renderDashboard();
+}
+
+function openStockAdjustModal(groupBuyId, productId) {
+    const stock = stockFor(groupBuyId, productId);
+    if (!stock) return alert('請先重新讀取團購庫存。');
+    document.getElementById('stock-adjust-group-id').value = groupBuyId;
+    document.getElementById('stock-adjust-product-id').value = productId;
+    document.getElementById('stock-adjust-product-label').textContent = `${stock.productCode}｜${stock.productName}`;
+    document.getElementById('stock-adjust-current').textContent = stock.remainingQuantity;
+    document.getElementById('stock-adjust-quantity').value = 0;
+    document.getElementById('stock-adjust-reason').value = '';
+    updateStockAdjustPreview();
+    openModal('stock-adjust-modal');
+}
+
+function updateStockAdjustPreview() {
+    const current = Number(document.getElementById('stock-adjust-current').textContent) || 0;
+    const change = Number(document.getElementById('stock-adjust-quantity').value) || 0;
+    document.getElementById('stock-adjust-after').textContent = current + change;
+}
+
+async function confirmStockAdjustment() {
+    const groupBuyId = document.getElementById('stock-adjust-group-id').value;
+    const productId = document.getElementById('stock-adjust-product-id').value;
+    const quantityChange = Number(document.getElementById('stock-adjust-quantity').value);
+    const reason = document.getElementById('stock-adjust-reason').value.trim();
+    if (!Number.isInteger(quantityChange) || quantityChange === 0) return alert('請輸入非 0 的整數調整量。');
+    if (!reason) return alert('請填寫調整原因。');
+    const result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/${encodeURIComponent(productId)}/adjust`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quantityChange, reason })
+    });
+    if (result.error || result.skipped) return alert(`調整失敗：${result.error || '尚未設定管理金鑰'}`);
+    state.groupBuyStock[stockKey(groupBuyId, productId)] = result.data.stock;
+    closeModal('stock-adjust-modal');
+    if (document.getElementById('group-buy-modal').classList.contains('show')) {
+        const gb = state.groupBuys.find(item => item.id === groupBuyId);
+        renderGroupBuyProductChecklist(gb?.productIds || [], groupBuyId);
+    }
+    renderDashboard();
+    renderProducts();
+    alert('庫存調整完成，異動原因已記錄。');
+}
+
+async function openStockReconcileModal(groupBuyId) {
+    const result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/reconcile`);
+    if (result.error || result.skipped) return alert(`核對失敗：${result.error || '尚未設定管理金鑰'}`);
+    const rows = result.data.differences || [];
+    document.getElementById('stock-reconcile-group-id').value = groupBuyId;
+    document.getElementById('stock-reconcile-tbody').innerHTML = rows.map(row => `<tr>
+        <td>${escapeHtml(row.productCode)}</td>
+        <td>${escapeHtml(row.productName)}</td>
+        <td>${row.soldQuantity}</td>
+        <td>${row.actualSoldQuantity}</td>
+        <td class="${row.difference ? 'text-orange' : ''}">${row.difference > 0 ? '+' : ''}${row.difference}</td>
+    </tr>`).join('') || '<tr><td colspan="5">沒有團購商品。</td></tr>';
+    document.getElementById('stock-reconcile-confirm').disabled = !rows.some(row => row.stockEnabled && row.difference !== 0);
+    openModal('stock-reconcile-modal');
+}
+
+async function confirmStockReconciliation() {
+    const groupBuyId = document.getElementById('stock-reconcile-group-id').value;
+    if (!confirm('確定依正式有效訂單修正庫存差異？每筆修正都會寫入異動紀錄。')) return;
+    const result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/reconcile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmed: true, reason: '後台重新核對庫存' })
+    });
+    if (result.error || result.skipped) return alert(`修正失敗：${result.error || '尚未設定管理金鑰'}`);
+    (result.data.stocks || []).forEach(stock => {
+        state.groupBuyStock[stockKey(groupBuyId, stock.productId)] = stock;
+    });
+    closeModal('stock-reconcile-modal');
+    renderDashboard();
+    renderProducts();
+    alert(`庫存核對完成，共修正 ${result.data.corrected} 項。`);
 }
 
 function groupBuyStatusForCloud(status) {
@@ -875,6 +1120,7 @@ function renderProducts() {
 
     list.forEach(p => {
         const isUsed = state.orders.some(o => o.items.some(it => it.productId === p.id));
+        const stock = stockFor(state.activeGroupBuyId, p.id);
         const statusBadge = p.enabled 
             ? `<span class="badge badge-paid">啟用中</span>` 
             : `<span class="badge badge-unpaid">已停用</span>`;
@@ -888,6 +1134,10 @@ function renderProducts() {
                 <td style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price}</td>
                 <td>${escapeHtml(p.unit)}</td>
                 <td>${statusBadge}</td>
+                <td>${stock && stock.stockEnabled ? stock.sellableQuantity : '-'}</td>
+                <td>${stock && stock.stockEnabled ? stock.soldQuantity : '-'}</td>
+                <td>${stock && stock.stockEnabled ? stock.remainingQuantity : '-'}</td>
+                <td>${stockStatusBadge(stock)}</td>
                 <td>
                     <div class="button-group">
                         <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
@@ -910,6 +1160,10 @@ function renderProducts() {
                     <span style="color:var(--text-muted);">規格：${escapeHtml(p.specs || '-')}</span>
                     <span style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price} / ${escapeHtml(p.unit)}</span>
                 </div>
+                <div class="mobile-card-row">
+                    <span>${stockStatusBadge(stock)}</span>
+                    <span>${stock && stock.stockEnabled ? `可賣 ${stock.sellableQuantity}｜已售 ${stock.soldQuantity}｜剩餘 ${stock.remainingQuantity}` : '本團不限量'}</span>
+                </div>
                 <div class="mobile-card-actions">
                     <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
                     <button class="btn btn-secondary btn-sm" onclick="toggleProductStatus('${p.id}')">${p.enabled ? '停用' : '啟用'}</button>
@@ -919,7 +1173,7 @@ function renderProducts() {
         `;
     });
 
-    tbody.innerHTML = html || `<tr><td colspan="8" style="text-align:center; color:var(--text-muted);">無商品資料</td></tr>`;
+    tbody.innerHTML = html || `<tr><td colspan="12" style="text-align:center; color:var(--text-muted);">無商品資料</td></tr>`;
     mobileList.innerHTML = mobileHtml || `<div style="text-align:center; color:var(--text-muted); padding:20px;">無商品資料</div>`;
 }
 
@@ -1258,7 +1512,14 @@ async function cloudFetch(path, options = {}) {
             headers: { authorization: `Bearer ${key}`, ...(options.headers || {}) }
         });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) return { error: payload.error || `HTTP ${response.status}` };
+        if (!response.ok) {
+            return {
+                error: payload.message || payload.error || `HTTP ${response.status}`,
+                code: payload.error || null,
+                status: response.status,
+                details: payload
+            };
+        }
         return { data: payload };
     } catch (error) {
         return { error: error.message || '網路錯誤' };
@@ -1348,8 +1609,17 @@ function printPackingSlips() {
 // 商品總量表（叫貨統計）
 function printProductTotals() {
     const orders = printActiveOrders();
-    if (!orders.length) return alert('目前團購沒有有效訂單可列印。');
+    const groupBuy = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
     const totals = {};
+    groupBuyProducts(groupBuy).forEach(product => {
+        totals[product.id] = {
+            name: product.name,
+            specs: product.specs || '',
+            unit: product.unit || '',
+            quantity: 0,
+            customers: new Set()
+        };
+    });
     orders.forEach(o => (o.items || []).forEach(it => {
         const key = it.productId;
         if (!totals[key]) totals[key] = { name: it.productName, specs: it.specs || '', unit: it.unit || '', quantity: 0, customers: new Set() };
@@ -1358,12 +1628,17 @@ function printProductTotals() {
     }));
     const rows = Object.keys(totals).sort().map(id => {
         const t = totals[id];
+        const stock = stockFor(state.activeGroupBuyId, id);
         return `<tr><td>${escapeHtml(id)}</td><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.specs)}</td>
-            <td>${t.quantity} ${escapeHtml(t.unit)}</td><td>${t.customers.size} 人</td></tr>`;
+            <td>${stock?.stockEnabled ? stock.sellableQuantity : '不限量'}</td>
+            <td>${stock?.stockEnabled ? stock.soldQuantity : t.quantity}</td>
+            <td>${stock?.stockEnabled ? stock.remainingQuantity : '—'}</td>
+            <td>${escapeHtml(stockStatusLabel(stock))}</td><td>${t.customers.size}</td></tr>`;
     }).join('');
+    if (!rows) return alert('目前團購沒有商品可列印。');
     runPrint(`<div class="print-page">
         <h2>商品總量表｜${escapeHtml(printGroupBuyTitle())}</h2>
-        <table><thead><tr><th>商品編號</th><th>商品名稱</th><th>規格</th><th>總數量</th><th>購買客戶數</th></tr></thead>
+        <table class="inventory-print-table"><thead><tr><th>編號</th><th>商品</th><th>規格</th><th>可賣</th><th>已售</th><th>剩餘</th><th>狀態</th><th>客戶</th></tr></thead>
         <tbody>${rows}</tbody></table>
     </div>`);
 }
@@ -1456,9 +1731,50 @@ async function syncCustomersFromCloud() {
     return { data: { synced: changed } };
 }
 
-async function syncLineOrdersFromCloud() {
-    if (!getCloudApiKey() || !state.activeGroupBuyId) return { skipped: true };
-    const result = await cloudFetch(`/api/orders?group_buy_id=${encodeURIComponent(state.activeGroupBuyId)}`);
+function stockKey(groupBuyId, productId) {
+    return `${groupBuyId}::${productId}`;
+}
+
+function stockFor(groupBuyId, productId) {
+    return state.groupBuyStock[stockKey(groupBuyId, productId)] || null;
+}
+
+async function loadGroupBuyStock(groupBuyId) {
+    if (!groupBuyId || !getCloudApiKey()) return { skipped: true };
+    const result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock`);
+    if (result.error || result.skipped) return result;
+    const stocks = (result.data && result.data.stocks) || [];
+    stocks.forEach(stock => {
+        state.groupBuyStock[stockKey(groupBuyId, stock.productId)] = stock;
+    });
+    return { data: { stocks } };
+}
+
+async function loadInventoryMovements(groupBuyId) {
+    if (!groupBuyId || !getCloudApiKey()) return { skipped: true };
+    const result = await cloudFetch(`/api/inventory/movements?group_buy_id=${encodeURIComponent(groupBuyId)}`);
+    if (result.error || result.skipped) return result;
+    state.inventoryMovements = (result.data && result.data.movements) || [];
+    return { data: { movements: state.inventoryMovements } };
+}
+
+function stockStatusLabel(stock) {
+    if (!stock || !stock.stockEnabled) return '不限量';
+    if (stock.stockStatus === 'sold_out') return '已售完';
+    if (stock.stockStatus === 'low_stock') return '即將售完';
+    return '庫存充足';
+}
+
+function stockStatusBadge(stock) {
+    const cls = !stock || !stock.stockEnabled ? 'stock-unlimited'
+        : stock.stockStatus === 'sold_out' ? 'stock-sold-out'
+            : stock.stockStatus === 'low_stock' ? 'stock-low' : 'stock-in';
+    return `<span class="badge ${cls}">${stockStatusLabel(stock)}</span>`;
+}
+
+async function syncLineOrdersFromCloud(groupBuyId = state.activeGroupBuyId) {
+    if (!getCloudApiKey() || !groupBuyId) return { skipped: true };
+    const result = await cloudFetch(`/api/orders?group_buy_id=${encodeURIComponent(groupBuyId)}`);
     if (result.error || result.skipped) return result;
     const orders = (result.data && result.data.orders) || [];
     const items = (result.data && result.data.items) || [];
@@ -1466,7 +1782,6 @@ async function syncLineOrdersFromCloud() {
     items.forEach(it => { (itemsByOrder[it.order_id] = itemsByOrder[it.order_id] || []).push(it); });
     let changed = 0;
     orders.forEach(o => {
-        if (!/^ORD-/.test(String(o.id))) return;
         // 自動建立／補齊本機客戶列：LINE 原始名稱與團主自訂名稱分開存，
         // 絕不用 LINE 原始名稱覆蓋團主已設定的名稱。
         if (o.customer_id) {
@@ -1501,16 +1816,16 @@ async function syncLineOrdersFromCloud() {
             // 訂單只保留「下單當時」的歷史名稱 snapshot；畫面顯示一律走 orderCustomerName() 重新解析，
             // 所以這裡即使存 LINE 原始名稱也不會讓後台顯示回「蜜茶」。
             customerNickname: (existing && existing.customerNickname) || o.customer_display_name || o.customer_nickname || o.customer_id,
-            phone: customer.phone || (existing && existing.phone) || '',
-            address: (existing && existing.address) || o.address || customer.address || '',
+            phone: o.phone_snapshot || customer.phone || (existing && existing.phone) || '',
+            address: o.address_snapshot || (existing && existing.address) || o.address || customer.address || '',
             pickupType: (existing && existing.pickupType) || o.pickup_type || o.customer_pickup_type || '',
             items: activeItems,
             totalAmount: Number(o.total_amount) || 0,
-            paymentStatus: (existing && existing.paymentStatus) || '未付款',
+            paymentStatus: o.payment_status || (existing && existing.paymentStatus) || '未付款',
             // 只保留本地的包貨流程狀態；取消／取消後復活（再下單）一律以雲端為準（2026-07-23 修正）
             orderStatus: o.status === '已取消' ? '已取消'
                 : ((existing && ['已確認', '已包貨', '已完成'].includes(existing.orderStatus)) ? existing.orderStatus : '新訂單'),
-            notes: (existing && existing.notes) || 'LINE 商品卡靜默收單',
+            notes: o.notes || (existing && existing.notes) || 'LINE 商品卡靜默收單',
             createdDate: String(o.created_at || '').replace('T', ' ').slice(0, 19),
             checkedProductIds: (existing && existing.checkedProductIds) || []
         };
@@ -2604,63 +2919,84 @@ function toggleSelectAllOrders(checked) {
 }
 
 // 批次付款更新
-function batchUpdatePayment(status) {
+async function persistAdminOrder(order, overrides = {}) {
+    const orderStatus = overrides.orderStatus || order.orderStatus || '新訂單';
+    return cloudFetch(`/api/admin/orders/${encodeURIComponent(order.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            requestId: `admin-${crypto.randomUUID()}`,
+            groupBuyId: order.groupBuyId,
+            customerId: order.customerId,
+            pickupType: order.pickupType || '自取',
+            phone: order.phone || '',
+            address: order.address || '',
+            paymentStatus: overrides.paymentStatus || order.paymentStatus || '未付款',
+            orderStatus,
+            notes: order.notes || '',
+            items: (order.items || []).map(item => ({
+                productId: item.productId,
+                quantity: Number(item.quantity),
+                unitPrice: Number(item.price)
+            }))
+        })
+    });
+}
+
+async function batchUpdatePayment(status) {
     if (selectedOrderIds.length === 0) {
         alert("請先勾選欲修改的訂單！");
         return;
     }
-    if (confirm(`確定要將選取的 ${selectedOrderIds.length} 筆訂單付款狀態修改為「${status}」嗎？`)) {
-        state.orders.forEach(o => {
-            if (selectedOrderIds.includes(o.id)) {
-                o.paymentStatus = status;
-            }
-        });
-        saveStateToStorage();
-        renderOrdersList();
-        alert("批次修改成功！");
-    }
+    if (!confirm(`確定要將選取的 ${selectedOrderIds.length} 筆訂單付款狀態修改為「${status}」嗎？`)) return;
+    const orders = state.orders.filter(o => selectedOrderIds.includes(o.id));
+    const results = await Promise.all(orders.map(order => persistAdminOrder(order, { paymentStatus: status })));
+    const failed = results.find(result => result.error || result.skipped);
+    if (failed) return alert(`批次修改失敗：${failed.error || '尚未設定後台 API 金鑰'}`);
+    await syncLineOrdersFromCloud();
+    saveStateToStorage();
+    renderOrdersList();
+    alert("批次修改成功！");
 }
 
 // 批次狀態更新
-function batchUpdateOrderStatus(status) {
+async function batchUpdateOrderStatus(status) {
     if (!status) return;
     if (selectedOrderIds.length === 0) {
         alert("請先勾選欲修改的訂單！");
         return;
     }
-    if (confirm(`確定要將選取的 ${selectedOrderIds.length} 筆訂單之訂單狀態修改為「${status}」嗎？`)) {
-        state.orders.forEach(o => {
-            if (selectedOrderIds.includes(o.id)) {
-                o.orderStatus = status;
-                // 若改為已包貨，自動將勾選狀態拉滿
-                if (status === '已包貨') {
-                    o.checkedProductIds = o.items.map(it => it.productId);
-                }
-            }
-        });
-        saveStateToStorage();
-        renderOrdersList();
-        document.getElementById('batch-order-status-select').value = ""; // 重設下拉選項
-        alert("批次狀態修改成功！");
-    }
+    if (!confirm(`確定要將選取的 ${selectedOrderIds.length} 筆訂單之訂單狀態修改為「${status}」嗎？`)) return;
+    const orders = state.orders.filter(o => selectedOrderIds.includes(o.id));
+    const results = await Promise.all(orders.map(order => persistAdminOrder(order, { orderStatus: status })));
+    const failed = results.find(result => result.error || result.skipped);
+    if (failed) return alert(`批次修改失敗：${failed.error || '尚未設定後台 API 金鑰'}`);
+    await Promise.all([syncLineOrdersFromCloud(), loadGroupBuyStock(state.activeGroupBuyId)]);
+    state.orders.forEach(o => {
+        if (selectedOrderIds.includes(o.id) && status === '已包貨') o.checkedProductIds = o.items.map(it => it.productId);
+    });
+    saveStateToStorage();
+    renderOrdersList();
+    document.getElementById('batch-order-status-select').value = "";
+    alert("批次狀態修改成功！");
 }
 
 // 單筆取消訂單 (不刪除資料)
-function cancelOrder(id) {
-    if (confirm(`確定要取消訂單 ${id} 嗎？此動作將只會更改狀態，不會永久刪除該訂單資料。`)) {
-        const o = state.orders.find(x => x.id === id);
-        if (o) {
-            o.orderStatus = "已取消";
-            saveStateToStorage();
-            if (orderViewMode === 'list') {
-                renderOrdersList();
-            } else if (orderViewMode === 'by-customer') {
-                renderCustomerSummaryView();
-            }
-            if (currentViewId === 'dashboard') renderDashboard();
-            alert("訂單已標記為已取消！");
-        }
+async function cancelOrder(id) {
+    if (!confirm(`確定要取消訂單 ${id} 嗎？商品數量會自動回補，但不會刪除訂單資料。`)) return;
+    const order = state.orders.find(x => x.id === id);
+    if (!order) return;
+    const result = await persistAdminOrder(order, { orderStatus: '已取消' });
+    if (result.error || result.skipped) {
+        alert(`取消失敗：${result.error || '尚未設定後台 API 金鑰'}`);
+        return;
     }
+    await Promise.all([syncLineOrdersFromCloud(order.groupBuyId), loadGroupBuyStock(order.groupBuyId)]);
+    saveStateToStorage();
+    if (orderViewMode === 'list') renderOrdersList();
+    else if (orderViewMode === 'by-customer') renderCustomerSummaryView();
+    if (currentViewId === 'dashboard') renderDashboard();
+    alert("訂單已取消，庫存已回補！");
 }
 
 // 檢視單筆訂單明細內容
@@ -2712,7 +3048,7 @@ function viewOrderDetail(id) {
 // --- 購物車明細編輯功能 (Modal 內) ---
 let cartItems = []; // 編輯中訂單的商品清單 [{productId, productName, specs, quantity, price, unit}]
 
-function openOrderModal(orderId = '') {
+async function openOrderModal(orderId = '') {
     const modal = document.getElementById('order-modal');
     const title = document.getElementById('order-modal-title');
     const form = document.getElementById('order-form');
@@ -2777,8 +3113,19 @@ function openOrderModal(orderId = '') {
         addOrderItemRow();
     }
 
+    await loadGroupBuyStock(document.getElementById('ord-group-buy').value);
     renderCartTable();
     modal.classList.add('show');
+}
+
+async function onOrderGroupBuyChange() {
+    const groupBuyId = document.getElementById('ord-group-buy').value;
+    await loadGroupBuyStock(groupBuyId);
+    const groupBuy = state.groupBuys.find(g => g.id === groupBuyId);
+    const allowed = new Set(groupBuyProducts(groupBuy).map(p => p.id));
+    cartItems = cartItems.filter(item => allowed.has(item.productId));
+    if (!cartItems.length) addOrderItemRow();
+    renderCartTable();
 }
 
 function closeOrderModal() {
@@ -2833,7 +3180,8 @@ function onOrderPickupTypeChange(val) {
 // 增加一行購物車商品
 function addOrderItemRow() {
     // 預設帶入第一個啟用商品，若無商品則不執行
-    const activeProds = state.products.filter(p => p.enabled);
+    const groupBuyId = document.getElementById('ord-group-buy')?.value || state.activeGroupBuyId;
+    const activeProds = groupBuyProducts(state.groupBuys.find(g => g.id === groupBuyId)).filter(p => p.enabled);
     if (activeProds.length === 0) {
         alert("目前商品庫無啟用的商品，請先去「商品管理」新增商品並啟用！");
         return;
@@ -2857,13 +3205,21 @@ function renderCartTable() {
     const listContainer = document.getElementById('cart-items-list');
     const totalSpan = document.getElementById('cart-total-amount');
     
-    const activeProds = state.products.filter(p => p.enabled);
+    const groupBuyId = document.getElementById('ord-group-buy')?.value || state.activeGroupBuyId;
+    const activeProds = groupBuyProducts(state.groupBuys.find(g => g.id === groupBuyId)).filter(p => p.enabled);
     let html = "";
     let total = 0;
 
     cartItems.forEach((item, index) => {
         const subtotal = item.price * item.quantity;
         total += subtotal;
+        const stock = stockFor(groupBuyId, item.productId);
+        const editingOrder = state.orders.find(o => o.id === document.getElementById('order-id')?.value);
+        const originalQty = Number(editingOrder?.items?.find(it => it.productId === item.productId)?.quantity || 0);
+        const available = stock && stock.stockEnabled ? Number(stock.remainingQuantity || 0) + originalQty : null;
+        const stockHint = stock && stock.stockEnabled
+            ? `${stockStatusLabel(stock)}｜目前可再訂 ${Math.max(0, Number(stock.remainingQuantity || 0))} ${escapeHtml(item.unit || '')}`
+            : '未啟用數量限制';
 
         // 產生商品選擇下拉清單
         let optHtml = "";
@@ -2877,8 +3233,8 @@ function renderCartTable() {
                 <select class="form-control" onchange="onCartItemProductChange(${index}, this.value)">
                     ${optHtml}
                 </select>
-                <span style="font-size:13px; color:var(--text-muted); text-align:center;">${escapeHtml(item.specs || '-')}</span>
-                <input type="number" class="form-control" style="text-align:center;" value="${item.quantity}" min="1" oninput="onCartItemQtyChange(${index}, this.value)">
+                <span style="font-size:13px; color:var(--text-muted); text-align:center;">${escapeHtml(item.specs || '-')}<small class="cart-stock-hint">${stockHint}</small></span>
+                <input type="number" class="form-control" style="text-align:center;" value="${item.quantity}" min="1" ${available == null ? '' : `max="${available}"`} oninput="onCartItemQtyChange(${index}, this.value)">
                 <input type="number" class="form-control" value="${item.price}" min="0" oninput="onCartItemPriceChange(${index}, this.value)">
                 <span style="font-weight:700; text-align:right; font-family:Outfit;">NT$ ${subtotal}</span>
                 <button type="button" class="btn btn-danger btn-sm" style="padding:6px 10px;" onclick="removeCartItemRow(${index})"><i class="fa-solid fa-trash"></i></button>
@@ -2891,6 +3247,11 @@ function renderCartTable() {
 }
 
 function onCartItemProductChange(index, prodId) {
+    if (cartItems.some((item, itemIndex) => itemIndex !== index && item.productId === prodId)) {
+        alert('同一張訂單內商品不可重複，請直接修改原商品列數量。');
+        renderCartTable();
+        return;
+    }
     const prod = state.products.find(p => p.id === prodId);
     if (prod) {
         cartItems[index].productId = prod.id;
@@ -2905,10 +3266,19 @@ function onCartItemProductChange(index, prodId) {
 function onCartItemQtyChange(index, val) {
     let qty = parseInt(val, 10);
     if (isNaN(qty) || qty <= 0) qty = 1;
+    const groupBuyId = document.getElementById('ord-group-buy')?.value || state.activeGroupBuyId;
+    const stock = stockFor(groupBuyId, cartItems[index].productId);
+    const editingOrder = state.orders.find(o => o.id === document.getElementById('order-id')?.value);
+    const originalQty = Number(editingOrder?.items?.find(it => it.productId === cartItems[index].productId)?.quantity || 0);
+    if (stock && stock.stockEnabled) {
+        const max = Number(stock.remainingQuantity || 0) + originalQty;
+        if (qty > max) {
+            qty = max;
+            alert(`數量不可超過目前可用數量 ${max}。如需增加，請先使用「調整庫存」。`);
+        }
+    }
     cartItems[index].quantity = qty;
-    
-    // 即時重算總額與小計，不整頁重新渲染，提升手機端輸入體驗
-    document.getElementById('cart-total-amount').textContent = cartItems.reduce((s, it) => s + (it.price * it.quantity), 0);
+    renderCartTable();
 }
 
 function onCartItemPriceChange(index, val) {
@@ -2925,8 +3295,8 @@ function removeCartItemRow(index) {
 }
 
 // 儲存訂單
-function saveOrder() {
-    const orderId = document.getElementById('order-id').value;
+async function saveOrder() {
+    const existingOrderId = document.getElementById('order-id').value;
     const groupBuyId = document.getElementById('ord-group-buy').value;
     const customerId = document.getElementById('ord-customer-select').value;
     const nickname = document.getElementById('ord-cust-nickname').value.trim();
@@ -2954,62 +3324,40 @@ function saveOrder() {
         return;
     }
 
-    const totalAmount = finalItems.reduce((sum, it) => sum + (it.price * it.quantity), 0);
-
-    if (orderId) {
-        // 編輯訂單
-        const o = state.orders.find(x => x.id === orderId);
-        if (o) {
-            o.groupBuyId = groupBuyId;
-            o.customerId = customerId;
-            o.customerNickname = nickname;
-            o.phone = phone;
-            o.pickupType = pickupType;
-            o.address = address;
-            o.paymentStatus = paymentStatus;
-            o.orderStatus = orderStatus;
-            o.notes = notes;
-            o.items = finalItems;
-            o.totalAmount = totalAmount;
-            
-            // 若標記為已包貨，自動將 checklist 的 checked 狀態設為全選
-            if (orderStatus === '已包貨') {
-                o.checkedProductIds = finalItems.map(it => it.productId);
-            }
-        }
-    } else {
-        // 新增訂單
-        // 自動生成編號
-        let maxNum = 0;
-        state.orders.forEach(o => {
-            const match = o.id.match(/^ORD(\d+)$/i);
-            if (match) {
-                const num = parseInt(match[1], 10);
-                if (num > maxNum) maxNum = num;
-            }
-        });
-        const newOrderId = 'ORD' + String(maxNum + 1).padStart(5, '0');
-        const nowStr = new Date().toLocaleString('zh-Hant-TW', { hour12: false }).replace(/\//g, '-');
-
-        const newOrder = {
-            id: newOrderId,
+    if (!getCloudApiKey()) {
+        alert('正式訂單必須連線至雲端 D1 才能安全扣庫存。請先在「LINE 設定」填入後台 API 金鑰。');
+        return;
+    }
+    const orderId = existingOrderId || `ADM-${crypto.randomUUID()}`;
+    const requestId = `admin-${crypto.randomUUID()}`;
+    const result = await cloudFetch(`/api/admin/orders/${encodeURIComponent(orderId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            requestId,
             groupBuyId,
             customerId,
-            customerNickname: nickname,
+            pickupType,
             phone,
             address,
-            pickupType,
-            items: finalItems,
-            totalAmount,
             paymentStatus,
             orderStatus,
             notes,
-            createdDate: nowStr,
-            checkedProductIds: orderStatus === '已包貨' ? finalItems.map(it => it.productId) : []
-        };
-        state.orders.push(newOrder);
+            items: finalItems.map(item => ({
+                productId: item.productId,
+                quantity: Number(item.quantity),
+                unitPrice: Number(item.price)
+            }))
+        })
+    });
+    if (result.error || result.skipped) {
+        const remaining = result.details?.remainingQuantity;
+        alert(`${result.error || '訂單儲存失敗'}${remaining == null ? '' : `\n目前剩餘數量：${remaining}`}`);
+        await loadGroupBuyStock(groupBuyId);
+        renderCartTable();
+        return;
     }
-
+    await Promise.all([syncLineOrdersFromCloud(groupBuyId), loadGroupBuyStock(groupBuyId)]);
     saveStateToStorage();
     closeOrderModal();
     
@@ -3021,7 +3369,7 @@ function saveOrder() {
     }
     
     if (currentViewId === 'dashboard') renderDashboard();
-    alert("訂單資料儲存成功！");
+    alert(result.data?.duplicate ? '這筆請求先前已完成，未重複扣庫存。' : '訂單資料已寫入 D1，庫存同步完成！');
 }
 
 
@@ -3207,14 +3555,19 @@ function quickMarkOrderPacked(orderId) {
 // ==========================================================================
 function renderProductSummaryView() {
     const tbody = document.getElementById('product-summary-tbody');
-    let html = "";
-
-    // 篩選當前活動的訂單 (不含已取消)
     const activeOrders = state.orders.filter(o => o.groupBuyId === state.activeGroupBuyId && o.orderStatus !== "已取消");
-
-    // 以商品為單位，加總訂購數量與人次
-    const stats = {}; // productId -> {product, totalQty, buyers: Set(customerId)}
-
+    const groupBuy = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
+    const stats = {};
+    groupBuyProducts(groupBuy).forEach(product => {
+        stats[product.id] = {
+            id: product.id,
+            name: product.name,
+            specs: product.specs,
+            totalQty: 0,
+            unit: product.unit || '個',
+            buyers: new Set()
+        };
+    });
     activeOrders.forEach(o => {
         o.items.forEach(it => {
             if (!stats[it.productId]) {
@@ -3231,17 +3584,19 @@ function renderProductSummaryView() {
             stats[it.productId].buyers.add(o.customerId);
         });
     });
-
-    // 轉化為數組並排序 (商品編號)
     const list = Object.values(stats).sort((a, b) => a.id.localeCompare(b.id, undefined, {numeric: true}));
-
-    list.forEach(s => {
-        html += `
+    const html = list.map(s => {
+        const stock = stockFor(state.activeGroupBuyId, s.id);
+        return `
             <tr>
                 <td style="font-family: Outfit; font-weight:700;"><span class="badge badge-id">${escapeHtml(s.id)}</span></td>
                 <td style="font-weight:700;">${escapeHtml(s.name)}</td>
                 <td>${escapeHtml(s.specs || '-')}</td>
                 <td style="font-size:18px; font-weight:900; color:var(--primary-orange);">${s.totalQty}</td>
+                <td>${stock?.stockEnabled ? stock.sellableQuantity : '不限量'}</td>
+                <td>${stock?.stockEnabled ? stock.soldQuantity : s.totalQty}</td>
+                <td>${stock?.stockEnabled ? stock.remainingQuantity : '—'}</td>
+                <td>${stockStatusBadge(stock)}</td>
                 <td style="font-weight:700;">${escapeHtml(s.unit)}</td>
                 <td style="font-weight:700;">${s.buyers.size} 人</td>
                 <td>
@@ -3249,9 +3604,8 @@ function renderProductSummaryView() {
                 </td>
             </tr>
         `;
-    });
-
-    tbody.innerHTML = html || `<tr><td colspan="7" style="text-align:center; color:var(--text-muted);">本團尚無訂單商品統計</td></tr>`;
+    }).join('');
+    tbody.innerHTML = html || `<tr><td colspan="11" style="text-align:center; color:var(--text-muted);">本團尚無商品統計</td></tr>`;
 }
 
 // 檢視哪些客戶購買了該商品
@@ -3298,6 +3652,156 @@ function prepareExcelExport() {
     document.getElementById('export-filter-payment').value = "all";
     document.getElementById('export-filter-status').value = "all";
     renderCurrentGroupBuySelect();
+    pendingExcelOrderImport = null;
+    const confirmButton = document.getElementById('excel-import-confirm');
+    if (confirmButton) confirmButton.disabled = true;
+    const preview = document.getElementById('excel-import-preview');
+    if (preview) preview.innerHTML = '';
+}
+
+async function onExcelGroupChange(groupBuyId) {
+    await Promise.all([loadGroupBuyStock(groupBuyId), loadInventoryMovements(groupBuyId)]);
+}
+
+function excelValue(row, names) {
+    for (const name of names) {
+        if (row[name] !== undefined && row[name] !== null && String(row[name]).trim() !== '') return row[name];
+    }
+    return '';
+}
+
+function readExcelOrderRows(file) {
+    return file.arrayBuffer().then(buffer => {
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        if (!firstSheet) throw new Error('Excel 沒有可讀取的工作表');
+        return XLSX.utils.sheet_to_json(firstSheet, { defval: '' }).map(row => ({
+            customerId: String(excelValue(row, ['客戶編號', 'customerId', 'customer_id'])).trim(),
+            productId: String(excelValue(row, ['商品編號', 'productId', 'product_id'])).trim(),
+            quantity: Number(excelValue(row, ['數量', 'quantity'])),
+            pickupType: String(excelValue(row, ['取貨方式', 'pickupType', 'pickup_type']) || '自取').trim(),
+            unitPrice: excelValue(row, ['單價', 'unitPrice', 'unit_price']) === ''
+                ? undefined : Number(excelValue(row, ['單價', 'unitPrice', 'unit_price']))
+        }));
+    });
+}
+
+function excelStockStatusLabel(status) {
+    return ({
+        ready: '可匯入',
+        insufficient_stock: '庫存不足',
+        stock_not_enabled: '商品未啟用庫存控管',
+        sold_out: '商品已售完'
+    })[status] || status;
+}
+
+async function previewExcelOrderImport() {
+    const file = document.getElementById('excel-import-file').files[0];
+    const groupBuyId = document.getElementById('excel-import-group-select').value;
+    const previewNode = document.getElementById('excel-import-preview');
+    const confirmButton = document.getElementById('excel-import-confirm');
+    pendingExcelOrderImport = null;
+    confirmButton.disabled = true;
+    if (!file || !groupBuyId) return alert('請先選擇團購活動與 Excel 檔案。');
+    try {
+        const rows = await readExcelOrderRows(file);
+        if (!rows.length) throw new Error('Excel 沒有訂單資料');
+        const payload = { groupBuyId, rows };
+        const result = await cloudFetch('/api/orders/import/preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (result.error || result.skipped) throw new Error(result.error || '尚未設定後台 API 金鑰');
+        const checks = result.data.stockChecks || [];
+        previewNode.innerHTML = `<table class="table-custom">
+            <thead><tr><th>商品</th><th>目前剩餘</th><th>本次增加</th><th>不足</th><th>狀態</th></tr></thead>
+            <tbody>${checks.map(check => `<tr>
+                <td>${escapeHtml(check.productCode)}｜${escapeHtml(check.productName)}</td>
+                <td>${check.stockEnabled ? check.remainingQuantity : '不限量'}</td>
+                <td>${check.requestedIncrease}</td>
+                <td>${check.shortageQuantity}</td>
+                <td>${excelStockStatusLabel(check.status)}</td>
+            </tr>`).join('')}</tbody></table>
+            <p class="page-subtitle">共 ${result.data.orderCount} 張訂單、${result.data.rowCount} 個商品彙總。預覽尚未扣庫存。</p>`;
+        pendingExcelOrderImport = result.data.valid ? payload : null;
+        confirmButton.disabled = !result.data.valid;
+    } catch (error) {
+        previewNode.innerHTML = `<div class="notice notice-danger">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+async function confirmExcelOrderImport() {
+    if (!pendingExcelOrderImport || !confirm('確定正式匯入？系統會重新檢查庫存，任一商品不足時整批不寫入。')) return;
+    const payload = { ...pendingExcelOrderImport, requestId: `excel-${crypto.randomUUID()}` };
+    const result = await cloudFetch('/api/orders/import/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+    if (result.error || result.skipped) {
+        alert(`匯入失敗：${result.error || '尚未設定後台 API 金鑰'}\n未產生半套訂單。`);
+        return;
+    }
+    await Promise.all([
+        syncLineOrdersFromCloud(payload.groupBuyId),
+        loadGroupBuyStock(payload.groupBuyId),
+        loadInventoryMovements(payload.groupBuyId)
+    ]);
+    pendingExcelOrderImport = null;
+    document.getElementById('excel-import-confirm').disabled = true;
+    saveStateToStorage();
+    alert(result.data.duplicate ? '這批資料先前已匯入，未重複扣庫存。' : `正式匯入完成：${result.data.importedOrders} 張訂單。`);
+}
+
+function buildProductInventoryExportRows(gbId) {
+    const groupBuy = state.groupBuys.find(g => g.id === gbId);
+    const inventoryOrders = state.orders.filter(o => o.groupBuyId === gbId && o.orderStatus !== '已取消');
+    const stats = {};
+    groupBuyProducts(groupBuy).forEach(product => {
+        stats[product.id] = { product, totalQuantity: 0, buyers: new Set() };
+    });
+    inventoryOrders.forEach(order => {
+        (order.items || []).forEach(item => {
+            if (!stats[item.productId]) {
+                stats[item.productId] = {
+                    product: state.products.find(product => product.id === item.productId) || {
+                        id: item.productId,
+                        name: item.productName,
+                        specs: item.specs || '',
+                        unit: item.unit || '個'
+                    },
+                    totalQuantity: 0,
+                    buyers: new Set()
+                };
+            }
+            stats[item.productId].totalQuantity += Number(item.quantity) || 0;
+            stats[item.productId].buyers.add(order.customerId);
+        });
+    });
+    return Object.values(stats).map(entry => {
+        const product = entry.product;
+        const stock = stockFor(gbId, product.id);
+        const cancellationReplenished = state.inventoryMovements
+            .filter(movement => movement.group_buy_id === gbId
+                && movement.product_id === product.id
+                && movement.movement_type === 'order_cancelled')
+            .reduce((sum, movement) => sum + Math.max(0, Number(movement.quantity_change) || 0), 0);
+        return {
+            "商品編號": product.id,
+            "商品名稱": product.name,
+            "規格": product.specs || "",
+            "進貨數量": stock?.stockEnabled ? stock.incomingQuantity : "",
+            "保留數量": stock?.stockEnabled ? stock.reservedQuantity : "",
+            "可賣數量": stock?.stockEnabled ? stock.sellableQuantity : "不限量",
+            "已售數量": stock?.stockEnabled ? stock.soldQuantity : entry.totalQuantity,
+            "取消回補數量": cancellationReplenished,
+            "剩餘數量": stock?.stockEnabled ? stock.remainingQuantity : "",
+            "低庫存門檻": stock?.stockEnabled ? stock.lowStockThreshold : "",
+            "庫存狀態": stockStatusLabel(stock),
+            "購買客戶數": entry.buyers.size
+        };
+    }).sort((a, b) => a["商品編號"].localeCompare(b["商品編號"], undefined, {numeric: true}));
 }
 
 // --- Excel 匯出模組 (支援多工作表) ---
@@ -3339,8 +3843,8 @@ function exportToExcel() {
     // 依客戶編號自然排序
     list.sort((a, b) => a.customerId.localeCompare(b.customerId, undefined, {numeric: true}));
 
-    if (list.length === 0) {
-        alert("目前選定的篩選條件下無任何訂單資料可匯出！");
+    if (list.length === 0 && groupBuyProducts(gb).length === 0) {
+        alert("目前選定的團購沒有商品或訂單資料可匯出！");
         return;
     }
 
@@ -3381,28 +3885,8 @@ function exportToExcel() {
         });
     });
 
-    // 3. 建立「商品數量統計」
-    const stats = {};
-    list.forEach(o => {
-        o.items.forEach(it => {
-            if (!stats[it.productId]) {
-                stats[it.productId] = {
-                    "商品編號": it.productId,
-                    "商品名稱": it.productName,
-                    "規格": it.specs || "",
-                    "總訂購數量": 0,
-                    "單位": state.products.find(p=>p.id===it.productId)?.unit || '個',
-                    "購買客戶數": new Set()
-                };
-            }
-            stats[it.productId]["總訂購數量"] += it.quantity;
-            stats[it.productId]["購買客戶數"].add(o.customerId);
-        });
-    });
-    const dataSheet3 = Object.values(stats).map(s => ({
-        ...s,
-        "購買客戶數": s["購買客戶數"].size
-    })).sort((a, b) => a["商品編號"].localeCompare(b["商品編號"], undefined, {numeric: true}));
+    // 3. 建立「商品數量統計」；庫存數字固定採有效訂單，不受上方匯出篩選條件影響。
+    const dataSheet3 = buildProductInventoryExportRows(gbId);
 
     // 4. 建立「外送及自取名單」
     const dataSheet4 = list.map(o => ({
@@ -3507,10 +3991,27 @@ function renderLineInbox() {
         const status = row.status || '待處理';
         const action = row.action || 'create';
         const actionLabels = { create: '新增', replace: '更正', cancel: '取消' };
-        const canImport = status === '可匯入' && Boolean(row.customer_id || row.customerId);
+        const customerId = row.customer_id || row.customerId;
+        let stockInsufficient = false;
         const itemText = items.length
-            ? items.map(item => `${escapeLineText(item.productCode)} × ${Number(item.quantity)}`).join('<br>')
+            ? items.map(item => {
+                const stock = Object.values(state.groupBuyStock).find(value =>
+                    value.groupBuyId === state.activeGroupBuyId
+                    && (value.productCode === item.productCode || value.productId === item.productCode));
+                if (!stock?.stockEnabled) return `${escapeLineText(item.productCode)} × ${Number(item.quantity)}<small>未啟用數量限制</small>`;
+                const order = state.orders.find(value => value.groupBuyId === state.activeGroupBuyId
+                    && value.customerId === customerId && value.orderStatus !== '已取消');
+                const before = Number(order?.items?.find(value =>
+                    value.productId === stock.productId)?.quantity || 0);
+                const desired = action === 'cancel' ? 0 : Number(item.quantity);
+                const delta = action === 'create' ? desired : desired - before;
+                const after = Number(stock.remainingQuantity) - delta;
+                if (after < 0) stockInsufficient = true;
+                return `${escapeLineText(item.productCode)} × ${Number(item.quantity)}
+                    <small>目前剩餘 ${stock.remainingQuantity}；轉入後 ${Math.max(0, after)}</small>`;
+            }).join('<br>')
             : escapeLineText(row.target_product_prefix || '');
+        const canImport = status === '可匯入' && Boolean(customerId) && !stockInsufficient;
         const messageIdEncoded = encodeURIComponent(row.message_id || row.messageId);
         const hasCustomer = Boolean(row.customer_id || row.customerId);
         const hasLineUser = Boolean(row.line_user_id || row.lineUserId);
@@ -3526,7 +4027,7 @@ function renderLineInbox() {
             <td>${escapeLineText(friendlyPostbackText(row.normalized_message || row.normalizedMessage))}</td>
             <td>${itemText}</td>
             <td>${escapeLineText(row.pickup_type || row.pickupType)}</td><td>${escapeLineText(row.message_time || row.messageTime)}</td>
-            <td><span class="line-status">${escapeLineText(status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
+            <td><span class="line-status">${escapeLineText(stockInsufficient ? '庫存不足' : status)}</span></td><td>${escapeLineText(row.error_reason || row.errorReason)}</td>
             <td><button class="btn btn-primary btn-sm" ${canImport ? '' : 'disabled'} onclick="importLineInbox('${encodeURIComponent(row.message_id || row.messageId)}')">${action === 'cancel' ? '確認取消' : action === 'replace' ? '確認更正' : '轉正式訂單'}</button></td>
         </tr>`;
     }).join('');
@@ -3564,6 +4065,7 @@ async function loadLineInbox() {
         });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         state.lineInbox = await response.json();
+        await loadGroupBuyStock(state.activeGroupBuyId);
         renderLineInbox();
         const now = new Date().toLocaleTimeString('zh-TW', { hour12: false });
         setLineInboxStamp(`已更新 ${now}（${state.lineInbox.length} 筆）`);
@@ -3584,7 +4086,10 @@ async function importLineInbox(encodedMessageId) {
         headers: { authorization: `Bearer ${localStorage.getItem('easygo_line_admin_api_key') || ''}` }
     });
     const result = await response.json();
-    if (!response.ok) { alert(result.error || '處理失敗'); return; }
+    if (!response.ok) {
+        alert(`${result.message || result.error || '處理失敗'}${result.remainingQuantity == null ? '' : `\n目前剩餘：${result.remainingQuantity}`}`);
+        return;
+    }
     await loadLineInbox();
     alert(result.imported ? '處理完成。' : '這筆資料先前已處理。');
 }

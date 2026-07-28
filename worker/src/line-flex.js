@@ -73,6 +73,15 @@ function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1
     const bodyContents = [
         { type: "text", text: String(product.name), weight: "bold", size: "xl", wrap: true },
         { type: "text", text: String(product.specs || "無規格"), size: "sm", color: "#666666", wrap: true, margin: "sm" },
+        ...(product.stock_enabled ? [{
+            type: "text",
+            text: `限量 ${Number(product.sellable_quantity || 0)} ${product.unit || "份"}｜售完為止`,
+            size: "sm",
+            color: "#C0392B",
+            weight: "bold",
+            wrap: true,
+            margin: "sm"
+        }] : []),
         {
             type: "box", layout: "baseline", margin: "lg", contents: [
                 { type: "text", text: `NT$ ${Number(product.price).toLocaleString("zh-TW")}`, weight: "bold", size: "xl", color: "#E86A33", flex: 0 },

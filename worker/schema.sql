@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS orders (
   group_buy_id TEXT,
   line_group_id TEXT,
   total_amount INTEGER NOT NULL DEFAULT 0,
+  payment_status TEXT NOT NULL DEFAULT '未付款',
+  notes TEXT,
+  phone_snapshot TEXT,
+  address_snapshot TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT
 );
@@ -107,8 +111,62 @@ CREATE TABLE IF NOT EXISTS group_buy_products (
   group_buy_id TEXT NOT NULL REFERENCES group_buys(id),
   product_id TEXT NOT NULL REFERENCES products(id),
   enabled INTEGER NOT NULL DEFAULT 1,
+  incoming_quantity INTEGER NOT NULL DEFAULT 0,
+  reserved_quantity INTEGER NOT NULL DEFAULT 0,
+  sellable_quantity INTEGER NOT NULL DEFAULT 0,
+  sold_quantity INTEGER NOT NULL DEFAULT 0,
+  remaining_quantity INTEGER NOT NULL DEFAULT 0,
+  low_stock_threshold INTEGER NOT NULL DEFAULT 5,
+  stock_status TEXT NOT NULL DEFAULT 'in_stock',
+  stock_enabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT,
   PRIMARY KEY (group_buy_id, product_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_group_buy_products_pair
+  ON group_buy_products(group_buy_id, product_id);
+CREATE INDEX IF NOT EXISTS idx_group_buy_products_stock_alert
+  ON group_buy_products(group_buy_id, stock_enabled, stock_status, remaining_quantity);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id TEXT PRIMARY KEY,
+  group_buy_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  order_id TEXT,
+  order_item_id INTEGER,
+  movement_type TEXT NOT NULL,
+  quantity_change INTEGER NOT NULL,
+  quantity_before INTEGER NOT NULL,
+  quantity_after INTEGER NOT NULL,
+  source_type TEXT NOT NULL,
+  notes TEXT,
+  request_key TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_group_product_time
+  ON inventory_movements(group_buy_id, product_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_order
+  ON inventory_movements(order_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS inventory_tx_guards (
+  id TEXT PRIMARY KEY,
+  valid INTEGER NOT NULL CHECK (valid = 1),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS order_mutation_requests (
+  request_id TEXT PRIMARY KEY,
+  source_type TEXT NOT NULL,
+  order_id TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version TEXT PRIMARY KEY,
+  description TEXT NOT NULL,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS line_groups (

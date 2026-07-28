@@ -141,6 +141,34 @@ test("文字 +1 與 Postback 共用同一訂單，按 3份會覆寫為 3", async
     db.database.close();
 });
 
+test("LINE 文字收件匣：收到留言不扣庫存，管理者確認轉單後才扣", async () => {
+    const db = createD1();
+    seed(db);
+    db.database.exec(`
+        UPDATE group_buy_products SET incoming_quantity = 3, sellable_quantity = 3,
+            remaining_quantity = 3, low_stock_threshold = 1, stock_enabled = 1
+            WHERE group_buy_id = 'GB1' AND product_id = 'P1';
+        INSERT INTO customers (id, nickname, line_user_id) VALUES ('C-LINE', '文字客戶', 'U-LINE');
+        INSERT INTO line_order_inbox
+            (message_id, webhook_event_id, group_id, line_user_id, display_name, customer_id, customer_nickname,
+             raw_message, normalized_message, parsed_items, action, message_time, status)
+        VALUES ('M-STOCK', 'W-TEXT-STOCK', 'G1', 'U-LINE', '文字客戶', 'C-LINE', '文字客戶',
+            'P1+2', 'P1+2', '[{"productCode":"P1","quantity":2}]', 'create',
+            '2026-07-22T10:00:00.000Z', '可匯入');
+    `);
+    assert.equal(db.database.prepare(`SELECT remaining_quantity FROM group_buy_products
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`).get().remaining_quantity, 3);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 0);
+
+    const inbox = db.database.prepare("SELECT * FROM line_order_inbox WHERE message_id = 'M-STOCK'").get();
+    await importInboxRecord({ DB: db }, inbox);
+    assert.equal(db.database.prepare(`SELECT remaining_quantity FROM group_buy_products
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`).get().remaining_quantity, 1);
+    assert.equal(db.database.prepare("SELECT quantity FROM order_items WHERE product_id = 'P1'").get().quantity, 2);
+    assert.equal(db.database.prepare("SELECT movement_type FROM inventory_movements").get().movement_type, "line_order_confirmed");
+    db.database.close();
+});
+
 test("團購截止或商品停售時不修改訂單，事件留下失敗原因", async () => {
     const db = createD1();
     seed(db);
@@ -150,5 +178,33 @@ test("團購截止或商品停售時不修改訂單，事件留下失敗原因",
     assert.match(stopped.error, /停售/);
     assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 0);
     assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM line_webhook_events WHERE process_status = 'failed'").get().count, 2);
+    db.database.close();
+});
+
+test("Postback 庫存控管：事件重送不重扣，售完後新客戶不得超賣", async () => {
+    const db = createD1();
+    seed(db);
+    db.database.exec(`UPDATE group_buy_products SET
+        incoming_quantity = 1, sellable_quantity = 1, remaining_quantity = 1,
+        low_stock_threshold = 1, stock_enabled = 1
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`);
+
+    const first = await processPostback({ DB: db }, postback("W-STOCK-1", "U1", "P1", 1));
+    assert.equal(first.processed, true);
+    assert.deepEqual(
+        { ...db.database.prepare(`SELECT sold_quantity, remaining_quantity, stock_status
+            FROM group_buy_products WHERE group_buy_id = 'GB1' AND product_id = 'P1'`).get() },
+        { sold_quantity: 1, remaining_quantity: 0, stock_status: "sold_out" }
+    );
+
+    const redelivery = await processPostback({ DB: db }, postback("W-STOCK-1", "U1", "P1", 1));
+    assert.equal(redelivery.duplicate, true);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM inventory_movements").get().count, 1);
+
+    const soldOut = await processPostback({ DB: db }, postback("W-STOCK-2", "U2", "P1", 1));
+    assert.equal(soldOut.error, "本商品已售完");
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 1);
+    assert.equal(db.database.prepare(`SELECT remaining_quantity FROM group_buy_products
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`).get().remaining_quantity, 0);
     db.database.close();
 });

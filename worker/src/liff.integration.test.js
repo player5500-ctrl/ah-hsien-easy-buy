@@ -127,6 +127,39 @@ test("有效 id_token → 使用驗證後的 userId 建立訂單；同時忽略�
     db.database.close();
 });
 
+test("LIFF 庫存控管：確認成功才扣、重複點擊不重扣、超量回 409", async () => {
+    const db = createD1();
+    seed(db);
+    stubVerify({
+        "tok-U1": { sub: "U1", name: "甲" },
+        "tok-U2": { sub: "U2", name: "乙" }
+    });
+    db.database.exec(`UPDATE group_buy_products SET
+        incoming_quantity = 2, sellable_quantity = 2, remaining_quantity = 2,
+        low_stock_threshold = 1, stock_enabled = 1
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`);
+
+    const payload = { idToken: "tok-U1", groupBuyId: "GB1", productId: "P1", quantity: 1, pickupType: "自取" };
+    const first = await call(db, "POST", "/api/liff/orders/set-quantity", { body: payload });
+    assert.equal(first.status, 200);
+    assert.equal((await first.json()).stock.remainingQuantity, 1);
+
+    const repeatedClick = await call(db, "POST", "/api/liff/orders/set-quantity", { body: payload });
+    assert.equal(repeatedClick.status, 200);
+    assert.equal((await repeatedClick.json()).stock.remainingQuantity, 1);
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM inventory_movements").get().count, 1);
+
+    const tooMany = await call(db, "POST", "/api/liff/orders/set-quantity", {
+        body: { ...payload, idToken: "tok-U2", quantity: 2 }
+    });
+    assert.equal(tooMany.status, 409);
+    assert.equal((await tooMany.json()).error, "INSUFFICIENT_STOCK");
+    assert.equal(db.database.prepare("SELECT COUNT(*) AS count FROM orders").get().count, 1);
+    assert.equal(db.database.prepare(`SELECT remaining_quantity FROM group_buy_products
+        WHERE group_buy_id = 'GB1' AND product_id = 'P1'`).get().remaining_quantity, 1);
+    db.database.close();
+});
+
 test("無效 id_token → 401 且不寫入任何資料（走真實 verify + 假 fetch）", async () => {
     const db = createD1();
     seed(db);

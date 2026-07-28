@@ -66,6 +66,18 @@ html, body {
 .price-unit { color: var(--text-muted); font-size: 0.95rem; }
 .price-hint { color: var(--text-muted); font-size: 0.85rem; margin: 0 0 8px; }
 
+.stock-status {
+    margin: 10px 0 16px;
+    padding: 9px 12px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    text-align: center;
+}
+.stock-status.stock-in { color: #166534; background: #dcfce7; }
+.stock-status.stock-low { color: #9a3412; background: #ffedd5; }
+.stock-status.stock-sold-out { color: #991b1b; background: #fee2e2; }
+
 .section-title { font-size: 1.05rem; font-weight: 800; margin: 4px 0 12px; }
 
 .pickup-selector { display: flex; gap: 10px; margin: 8px 0 4px; }

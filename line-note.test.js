@@ -101,15 +101,23 @@ test("記事本文案視窗只列本團啟用商品，且沒有商品時不開�
     assert.match(source, /select\.value = lineNoteProducts\[0\]\.id/);
 });
 
-test("記事本文案商品來源嚴格依本團勾選代碼，不套用舊資料的全商品退回行為", () => {
+test("記事本文案商品來源有勾選代碼時只保留本團商品", () => {
+    const selected = LineNote.groupProducts(products, ["P002"]);
+    assert.deepEqual(selected.map(product => product.id), ["P002"]);
+
     const filterStart = appSource.indexOf("function groupBuyLineNoteProducts(groupBuy)");
     const openStart = appSource.indexOf("function openLineNoteModal()", filterStart);
     const source = appSource.slice(filterStart, openStart);
 
-    assert.match(source, /Array\.isArray\(groupBuy\.productIds\)/);
-    assert.match(source, /new Set\(groupBuy\.productIds\.map\(String\)\)/);
-    assert.match(source, /state\.products\.filter/);
-    assert.doesNotMatch(source, /groupBuyProducts|return state\.products\s*;/);
+    assert.match(source, /LineNote\.groupProducts\(state\.products, groupBuy\.productIds\)/);
+});
+
+test("舊團購沒有 productIds 時沿用啟用中商品，不再錯誤顯示無商品", () => {
+    const legacyProducts = LineNote.groupProducts(products, []);
+    const enabled = LineNote.enabledProducts(legacyProducts);
+
+    assert.deepEqual(enabled.map(product => product.id), ["P001", "P002"]);
+    assert.doesNotMatch(LineNote.generateLineNote(enabled, { productId: "P001" }), /P002/);
 });
 
 test("下拉選單切換立即更新單商品預覽，一鍵複製只讀取目前預覽", () => {

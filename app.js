@@ -1952,9 +1952,8 @@ function updateLineNotePreview() {
 }
 
 function groupBuyLineNoteProducts(groupBuy) {
-    if (!groupBuy || !Array.isArray(groupBuy.productIds)) return [];
-    const selectedIds = new Set(groupBuy.productIds.map(String));
-    return state.products.filter(product => selectedIds.has(String(product.id)));
+    if (!groupBuy) return [];
+    return LineNote.groupProducts(state.products, groupBuy.productIds);
 }
 
 function openLineNoteModal() {

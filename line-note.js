@@ -25,6 +25,13 @@
         return (products || []).filter(product => product && product.enabled);
     }
 
+    function groupProducts(products, productIds) {
+        const available = products || [];
+        if (!Array.isArray(productIds) || !productIds.length) return available;
+        const selectedIds = new Set(productIds.map(String));
+        return available.filter(product => product && selectedIds.has(String(product.id)));
+    }
+
     function selectedProduct(products, productId) {
         const enabled = enabledProducts(products);
         if (!enabled.length) return null;
@@ -78,6 +85,7 @@
     return {
         enabledProducts,
         generateLineNote,
+        groupProducts,
         productOptionLabel,
         selectedProduct,
         selectedProductImage

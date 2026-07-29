@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'ah-hsien-easy-buy-';
-const CACHE_NAME = `${CACHE_PREFIX}20260729-single-line-note-v4`;
+const CACHE_NAME = `${CACHE_PREFIX}20260729-line-note-legacy-group-fix-v5`;
 const CORE_ASSETS = [
     './',
     './index.html',

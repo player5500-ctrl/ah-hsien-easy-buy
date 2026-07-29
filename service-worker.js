@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'ah-hsien-easy-buy-';
-const CACHE_NAME = `${CACHE_PREFIX}20260729-line-note-legacy-group-fix-v5`;
+const CACHE_NAME = `${CACHE_PREFIX}20260729-stock-reconcile-repair-v6`;
 const CORE_ASSETS = [
     './',
     './index.html',

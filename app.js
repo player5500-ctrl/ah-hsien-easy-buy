@@ -968,10 +968,78 @@ async function confirmStockAdjustment() {
     alert('庫存調整完成，異動原因已記錄。');
 }
 
+function reconciliationProductIds(groupBuy) {
+    if (!groupBuy || !Array.isArray(groupBuy.productIds)) return [];
+    const availableIds = new Set(state.products.map(product => String(product.id)));
+    return [...new Set(groupBuy.productIds.map(String))].filter(productId => availableIds.has(productId));
+}
+
+async function repairMissingGroupBuyProducts(groupBuy) {
+    const productIds = reconciliationProductIds(groupBuy);
+    if (!productIds.length) return { skipped: true };
+
+    for (const productId of productIds) {
+        const product = state.products.find(item => String(item.id) === productId);
+        const productResult = await syncProductToCloud(product);
+        if (productResult.error || productResult.skipped) {
+            return { error: productResult.error || `商品 ${productId} 尚未同步` };
+        }
+    }
+
+    const groupResult = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuy.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name: groupBuy.name,
+            starts_at: groupBuyDateTime(groupBuy.startDate),
+            ends_at: groupBuyDateTime(groupBuy.endDate, true),
+            status: groupBuyStatusForCloud(groupBuy.status),
+            notes: groupBuy.notes || null,
+            product_ids: productIds
+        })
+    });
+    if (groupResult.error || groupResult.skipped) {
+        return { error: groupResult.error || '團購商品關聯尚未同步' };
+    }
+
+    const stockSettings = Array.isArray(groupBuy.stockSettings) ? groupBuy.stockSettings : [];
+    for (const stock of stockSettings.filter(item => productIds.includes(String(item.productId)))) {
+        const stockResult = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuy.id)}/stock/${encodeURIComponent(stock.productId)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(stock)
+        });
+        if (stockResult.error || stockResult.skipped) {
+            return { error: `${stock.productId}：${stockResult.error || '庫存設定尚未同步'}` };
+        }
+        state.groupBuyStock[stockKey(groupBuy.id, stock.productId)] = stockResult.data.stock;
+    }
+    return { data: { synced: true, productIds } };
+}
+
 async function openStockReconcileModal(groupBuyId) {
-    const result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/reconcile`);
+    const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
+    let result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/reconcile`);
     if (result.error || result.skipped) return alert(`核對失敗：${result.error || '尚未設定管理金鑰'}`);
-    const rows = result.data.differences || [];
+    let rows = result.data.differences || [];
+
+    if (!rows.length && groupBuy) {
+        const productIds = reconciliationProductIds(groupBuy);
+        if (!productIds.length) {
+            return alert('此團購尚未保存商品勾選資料，請先編輯團購活動並儲存商品勾選。');
+        }
+        const repair = await repairMissingGroupBuyProducts(groupBuy);
+        if (repair.error || repair.skipped) {
+            return alert(`核對失敗：${repair.error || '無法確認本團商品勾選資料'}`);
+        }
+        result = await cloudFetch(`/api/group-buys/${encodeURIComponent(groupBuyId)}/stock/reconcile`);
+        if (result.error || result.skipped) return alert(`核對失敗：${result.error || '同步後仍無法讀取庫存'}`);
+        rows = result.data.differences || [];
+    }
+
+    rows.forEach(stock => {
+        state.groupBuyStock[stockKey(groupBuyId, stock.productId)] = stock;
+    });
     document.getElementById('stock-reconcile-group-id').value = groupBuyId;
     document.getElementById('stock-reconcile-tbody').innerHTML = rows.map(row => `<tr>
         <td>${escapeHtml(row.productCode)}</td>
@@ -979,7 +1047,7 @@ async function openStockReconcileModal(groupBuyId) {
         <td>${row.soldQuantity}</td>
         <td>${row.actualSoldQuantity}</td>
         <td class="${row.difference ? 'text-orange' : ''}">${row.difference > 0 ? '+' : ''}${row.difference}</td>
-    </tr>`).join('') || '<tr><td colspan="5">沒有團購商品。</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5">同步後仍沒有團購商品，請重新儲存團購活動。</td></tr>';
     document.getElementById('stock-reconcile-confirm').disabled = !rows.some(row => row.stockEnabled && row.difference !== 0);
     openModal('stock-reconcile-modal');
 }

@@ -7,6 +7,7 @@ const CustomerName = require("./customer-name.js");
 
 function loadApp() {
     const elements = new Map();
+    const storage = new Map([["easygo_line_admin_api_key", "test-admin-key"]]);
     const makeElement = () => ({
         value: "",
         textContent: "",
@@ -29,7 +30,11 @@ function loadApp() {
             querySelector() { return null; },
             addEventListener() {}
         },
-        localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+        localStorage: {
+            getItem(key) { return storage.get(key) || null; },
+            setItem(key, value) { storage.set(key, value); },
+            removeItem(key) { storage.delete(key); }
+        },
         alert() {},
         confirm() { return false; },
         fetch: async () => ({ ok: true, json: async () => ({}) }),
@@ -42,6 +47,7 @@ function loadApp() {
     vm.runInContext(fs.readFileSync(path.join(__dirname, "app.js"), "utf8"), context, { filename: "app.js" });
     sandbox.setState = value => vm.runInContext(`state = ${JSON.stringify(value)};`, context);
     sandbox.elements = elements;
+    sandbox.storage = storage;
     return sandbox;
 }
 
@@ -113,4 +119,129 @@ test("商品總量列印包含庫存欄位且不修改包貨單、外送與自�
     assert.match(html, /剩餘/);
     assert.match(html, /即將售完/);
     assert.match(html, /inventory-print-table/);
+});
+
+test("核對庫存初次查無團購商品時，會同步本團勾選商品後重新讀取", async () => {
+    const app = loadApp();
+    app.setState({
+        groupBuys: [{
+            id: "GB1",
+            name: "紐西蘭水果團",
+            startDate: "2026-07-01",
+            endDate: "2026-07-31",
+            status: "開放",
+            notes: "",
+            productIds: ["P029"],
+            stockSettings: []
+        }],
+        products: [{
+            id: "P029",
+            name: "紐西蘭富士蘋果",
+            specs: "9顆",
+            price: 200,
+            unit: "顆",
+            enabled: true
+        }],
+        customers: [],
+        orders: [],
+        lineInbox: [],
+        groupBuyStock: {},
+        inventoryMovements: [],
+        activeGroupBuyId: "GB1"
+    });
+
+    const calls = [];
+    let reconcileReads = 0;
+    app.fetch = async (url, options = {}) => {
+        calls.push({ url, options });
+        if (url.endsWith("/api/group-buys/GB1/stock/reconcile")) {
+            reconcileReads += 1;
+            return {
+                ok: true,
+                json: async () => reconcileReads === 1
+                    ? { differences: [] }
+                    : {
+                        differences: [{
+                            groupBuyId: "GB1",
+                            productId: "P029",
+                            productCode: "P029",
+                            productName: "紐西蘭富士蘋果",
+                            stockEnabled: false,
+                            soldQuantity: 0,
+                            actualSoldQuantity: 0,
+                            difference: 0
+                        }]
+                    }
+            };
+        }
+        return { ok: true, json: async () => ({ synced: true }) };
+    };
+
+    await app.openStockReconcileModal("GB1");
+
+    assert.equal(reconcileReads, 2);
+    assert.ok(calls.some(call => call.url.endsWith("/api/products/P029") && call.options.method === "PUT"));
+    const groupCall = calls.find(call => call.url.endsWith("/api/group-buys/GB1") && call.options.method === "PUT");
+    assert.deepEqual(JSON.parse(groupCall.options.body).product_ids, ["P029"]);
+    assert.match(app.document.getElementById("stock-reconcile-tbody").innerHTML, /紐西蘭富士蘋果/);
+    assert.doesNotMatch(app.document.getElementById("stock-reconcile-tbody").innerHTML, /沒有團購商品/);
+});
+
+test("核對庫存沒有明確商品勾選時不擅自同步全部商品", async () => {
+    const app = loadApp();
+    const alerts = [];
+    app.alert = message => alerts.push(message);
+    app.setState({
+        groupBuys: [{ id: "GB1", name: "舊團購", productIds: [] }],
+        products: [{ id: "P029", name: "紐西蘭富士蘋果", enabled: true }],
+        customers: [],
+        orders: [],
+        lineInbox: [],
+        groupBuyStock: {},
+        inventoryMovements: [],
+        activeGroupBuyId: "GB1"
+    });
+    app.fetch = async () => ({ ok: true, json: async () => ({ differences: [] }) });
+
+    await app.openStockReconcileModal("GB1");
+
+    assert.match(alerts[0], /尚未保存商品勾選資料/);
+});
+
+test("核對庫存已有雲端團購商品時保持唯讀，不重複補同步", async () => {
+    const app = loadApp();
+    app.setState({
+        groupBuys: [{ id: "GB1", name: "紐西蘭水果團", productIds: ["P029"] }],
+        products: [{ id: "P029", name: "紐西蘭富士蘋果", enabled: true }],
+        customers: [],
+        orders: [],
+        lineInbox: [],
+        groupBuyStock: {},
+        inventoryMovements: [],
+        activeGroupBuyId: "GB1"
+    });
+    const calls = [];
+    app.fetch = async (url, options = {}) => {
+        calls.push({ url, options });
+        return {
+            ok: true,
+            json: async () => ({
+                differences: [{
+                    groupBuyId: "GB1",
+                    productId: "P029",
+                    productCode: "P029",
+                    productName: "紐西蘭富士蘋果",
+                    stockEnabled: false,
+                    soldQuantity: 0,
+                    actualSoldQuantity: 0,
+                    difference: 0
+                }]
+            })
+        };
+    };
+
+    await app.openStockReconcileModal("GB1");
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.method, undefined);
 });

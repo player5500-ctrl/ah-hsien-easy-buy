@@ -21,13 +21,36 @@
         return lines.join("\n");
     }
 
+    function enabledProducts(products) {
+        return (products || []).filter(product => product && product.enabled);
+    }
+
+    function selectedProduct(products, productId) {
+        const enabled = enabledProducts(products);
+        if (!enabled.length) return null;
+        return enabled.find(product => String(product.id) === String(productId || "")) || enabled[0];
+    }
+
+    function productOptionLabel(product) {
+        if (!product) return "";
+        const spec = product.specs ? `（${product.specs}）` : "";
+        return `${product.id}｜${product.name}${spec}`;
+    }
+
+    function selectedProductImage(products, productId) {
+        const product = selectedProduct(products, productId);
+        if (!product) return null;
+        const url = String(product.photo || product.image_url || "").trim();
+        return /^https?:\/\//i.test(url) ? { product, url } : null;
+    }
+
     function generateLineNote(products, options = {}) {
         const title = options.title || "阿賢Easy購｜本檔團購商品";
-        const enabled = (products || []).filter(p => p && p.enabled);
-        if (!enabled.length) return "";
+        const product = selectedProduct(products, options.productId);
+        if (!product) return "";
         const divider = "━━━━━━━━━━";
-        const sections = enabled.map(productLines).join("\n\n");
-        const example = enabled[0].id;
+        const section = productLines(product);
+        const example = product.id;
 
         // 團購資訊（截止、到貨、自取／外送說明）
         const info = [];
@@ -43,14 +66,20 @@
             "　按了卡片不會有任何回應是正常的，老闆後台都收得到",
             `📝 超過3份或想留言下單：商品代碼＋數量，例如「${example}+5」`
         ];
-        if (enabled.length === 1) howTo.push("　只有一樣商品，直接留言「+2」也可以");
+        howTo.push("　只有一樣商品，直接留言「+2」也可以");
         howTo.push(`✏️ 更正訂單：「更正 ${example}+3」`, `❌ 取消訂單：「取消 ${example}」或按商品卡「取消訂購」`);
 
-        const blocks = [`🛒 ${title}`, divider, sections, divider];
+        const blocks = [`🛒 ${title}`, divider, section, divider];
         if (info.length) blocks.push(info.join("\n"), divider);
         blocks.push(howTo.join("\n"));
         return blocks.join("\n");
     }
 
-    return { generateLineNote };
+    return {
+        enabledProducts,
+        generateLineNote,
+        productOptionLabel,
+        selectedProduct,
+        selectedProductImage
+    };
 });

@@ -1929,25 +1929,47 @@ async function syncAllProductsToCloud() {
 }
 
 // --- LINE 記事本文案 ---
+let lineNoteProducts = [];
+
+function lineNoteOptions(groupBuy, productId) {
+    return {
+        productId,
+        title: groupBuy ? `阿賢Easy購｜${groupBuy.name}` : undefined,
+        deadline: groupBuy?.endDate || '',
+        notes: groupBuy?.notes || ''
+    };
+}
+
+function updateLineNotePreview() {
+    const select = document.getElementById('line-note-product-select');
+    const textarea = document.getElementById('line-note-textarea');
+    if (!select || !textarea) return;
+    const product = LineNote.selectedProduct(lineNoteProducts, select.value);
+    const groupBuy = state.groupBuys.find(item => item.id === state.activeGroupBuyId);
+    textarea.value = product
+        ? LineNote.generateLineNote(lineNoteProducts, lineNoteOptions(groupBuy, product.id))
+        : '';
+}
+
+function groupBuyLineNoteProducts(groupBuy) {
+    if (!groupBuy || !Array.isArray(groupBuy.productIds)) return [];
+    const selectedIds = new Set(groupBuy.productIds.map(String));
+    return state.products.filter(product => selectedIds.has(String(product.id)));
+}
+
 function openLineNoteModal() {
-    const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
-    // 只列「本團商品」；團購未勾選商品時退回所有啟用中商品
-    const note = LineNote.generateLineNote(groupBuyProducts(gb), gb ? {
-        title: `阿賢Easy購｜${gb.name}`,
-        deadline: gb.endDate || '',
-        notes: gb.notes || ''
-    } : {});
-    if (!note) {
-        const hasEnabledProducts = state.products.some(p => p.enabled);
-        const gbHasSelection = gb && Array.isArray(gb.productIds) && gb.productIds.length > 0;
-        if (hasEnabledProducts && gbHasSelection) {
-            alert(`目前團購「${gb.name}」勾選的商品都已停用。\n請到「團購活動」編輯本團商品勾選，或切換當前團購。`);
-        } else {
-            alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
-        }
+    const groupBuy = state.groupBuys.find(item => item.id === state.activeGroupBuyId);
+    lineNoteProducts = LineNote.enabledProducts(groupBuyLineNoteProducts(groupBuy));
+    if (!lineNoteProducts.length) {
+        alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
         return;
     }
-    document.getElementById('line-note-textarea').value = note;
+    const select = document.getElementById('line-note-product-select');
+    select.innerHTML = lineNoteProducts.map(product =>
+        `<option value="${escapeLineText(product.id)}">${escapeLineText(LineNote.productOptionLabel(product))}</option>`
+    ).join('');
+    select.value = lineNoteProducts[0].id;
+    updateLineNotePreview();
     document.getElementById('line-note-modal').classList.add('show');
 }
 
@@ -1955,35 +1977,30 @@ function closeLineNoteModal() {
     document.getElementById('line-note-modal').classList.remove('show');
 }
 
-// 下載啟用中商品的圖片（LINE 記事本無法自動顯示連結圖片，需手動附圖；此功能方便一次存圖）
+// 只下載下拉選單目前選取的商品圖片。
 async function downloadLineNoteImages() {
-    const gb = state.groupBuys.find(g => g.id === state.activeGroupBuyId);
-    const targets = groupBuyProducts(gb).filter(p => p.enabled && /^https?:\/\//i.test(p.photo || ''));
-    if (!targets.length) {
-        alert('啟用中的商品沒有可下載的圖片（請先在商品管理上傳或填寫圖片網址）。');
+    const selectedId = document.getElementById('line-note-product-select')?.value || '';
+    const target = LineNote.selectedProductImage(lineNoteProducts, selectedId);
+    if (!target) {
+        alert('所選商品沒有可下載的圖片（請先在商品管理上傳或填寫圖片網址）。');
         return;
     }
-    let done = 0;
-    const failed = [];
-    for (const p of targets) {
-        try {
-            const response = await fetch(p.photo);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            const blob = await response.blob();
-            const extension = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = `${p.id}_${p.name}.${extension}`.replace(/[\\/:*?"<>|]/g, '_');
-            document.body.appendChild(link);
-            link.click();
-            link.remove();
-            setTimeout(() => URL.revokeObjectURL(link.href), 10000);
-            done += 1;
-        } catch (_error) {
-            failed.push(p.id);
-        }
+    try {
+        const response = await fetch(target.url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const extension = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = `${target.product.id}_${target.product.name}.${extension}`.replace(/[\\/:*?"<>|]/g, '_');
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+        alert('已下載所選商品圖。\n請在 LINE 記事本用「照片」功能附上。');
+    } catch (_error) {
+        alert(`所選商品圖片下載失敗：${target.product.id}\n可點文案中的圖片連結手動儲存。`);
     }
-    alert(`已下載 ${done} 張商品圖。${failed.length ? `\n下載失敗：${failed.join('、')}（可點文案中的連結手動儲存）` : '\n請在 LINE 記事本用「照片」功能附上。'}`);
 }
 
 async function copyLineNote() {

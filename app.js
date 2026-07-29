@@ -4281,7 +4281,22 @@ async function confirmLineBind() {
         alert(result.error || '綁定失敗');
         return;
     }
+    // 先捕捉本次綁定的收件匣列與其暫存客戶編號（closeLineBindModal 會清空 lineBindTargetMessageId）
+    const boundMessageId = decodeURIComponent(lineBindTargetMessageId || '');
+    const inboxRow = (state.lineInbox || []).find(r => (r.message_id || r.messageId) === boundMessageId);
+    const inboxPendingId = inboxRow ? String(inboxRow.customer_id || inboxRow.customerId || '') : '';
     closeLineBindModal();
+    // 綁定會把 LINE- 暫存客戶的訂單搬到正式客戶（雲端已完成）；本機 localStorage 的訂單
+    // 也要跟著改掛，否則非當前團購的舊訂單會讓暫存客戶殘影永遠刪不掉（2026-07-28 修正）。
+    const pendingIdsToRemap = new Set();
+    const mergedPendingId = String(result.merged_pending_customer_id || '').trim();
+    if (/^LINE-/i.test(mergedPendingId)) pendingIdsToRemap.add(mergedPendingId);
+    if (/^LINE-/i.test(inboxPendingId) && inboxPendingId !== customer.id) pendingIdsToRemap.add(inboxPendingId);
+    if (pendingIdsToRemap.size > 0) {
+        state.orders.forEach(o => { if (pendingIdsToRemap.has(o.customerId)) o.customerId = customer.id; });
+        state.customers = state.customers.filter(c => !pendingIdsToRemap.has(c.id));
+        saveStateToStorage();
+    }
     // 綁定後把雲端客戶（含 LINE 原始名稱）拉回本機，客戶管理才看得到 LINE 名稱提示
     await syncCustomersFromCloud();
     await loadLineInbox();

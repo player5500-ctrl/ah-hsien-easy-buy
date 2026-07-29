@@ -7,6 +7,7 @@
 
 const CustomerName = require("../../customer-name.js");
 const Inventory = require("./inventory.js");
+const CustomerAccounts = require("./customer-accounts.js");
 
 const PICKUP_TYPES = new Set(["自取", "外送"]);
 
@@ -116,8 +117,8 @@ function hasNonEmptyAddress(value) {
 
 async function resolveCustomer(env, sub) {
     // 只用 id_token 驗證後的 sub（= LINE userId）查客戶，永不用名稱識別。
-    const existingCustomer = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, address
-        FROM customers WHERE line_user_id = ? LIMIT 1`).bind(sub).first();
+    // 多帳號查找（migration-010）：先查 customer_line_accounts、再回退 customers.line_user_id。
+    const existingCustomer = await CustomerAccounts.findCustomerByLineUserId(env, sub);
     const customerId = existingCustomer?.id || await stableId("LINE", sub);
     const address = normalizeAddress(existingCustomer?.address);
     return { existingCustomer, customerId, address, hasAddress: hasNonEmptyAddress(address) };
@@ -136,12 +137,6 @@ function inboxUpsertStatement(env, orderId, sub, customerName, customerId, picku
          raw_message, normalized_message, parsed_items, action, pickup_type, message_time, status, processed_at, related_order_id)
         VALUES (?, NULL, '', ?, ?, ?, NULL, 'LIFF 自助下單', 'LIFF 自助下單', '[]', 'replace', ?, CURRENT_TIMESTAMP, '已轉正式訂單', CURRENT_TIMESTAMP, ?)`)
         .bind(`liff:${orderId}`, sub, customerName, customerId, pickupType || null, orderId);
-}
-
-// LINE 原始名稱只寫進 line_display_name；團主自訂名稱（custom_display_name）永不被 LIFF 覆蓋。
-function customerUpsertStatement(env, customerId, lineDisplayName, sub) {
-    const name = String(lineDisplayName || "").trim();
-    return env.DB.prepare(CustomerName.CUSTOMER_UPSERT_SQL).bind(customerId, name || "LINE 客戶", name || null, sub);
 }
 
 function recomputeStatement(env, orderId, pickupType) {
@@ -307,8 +302,13 @@ async function setQuantity(request, env) {
     const unitPrice = effectivePrice(context, pickupType);
     const productCode = context.line_code || context.product_id;
 
+    // 建暫存客戶／更新 LINE 原始名稱＋補寫多帳號對照列（LINE 原始名稱只寫 line_display_name，
+    // 團主自訂名稱永不被 LIFF 覆蓋；第二個以上帳號不可跑 CUSTOMER_UPSERT_SQL，見 customer-accounts.js）。
+    const customerStatements = await CustomerAccounts.customerTouchStatements(env, {
+        customerId, existingCustomer: existingCustomerRow, lineUserId: sub, lineDisplayName
+    });
     const preStatements = [
-        customerUpsertStatement(env, customerId, lineDisplayName, sub),
+        ...customerStatements,
         // 客戶列 upsert 後、若本次帶入非空地址就更新，維持與訂單同一原子批次。
         ...(willPersistAddress ? [addressUpdateStatement(env, customerId, providedAddress)] : []),
         inboxUpsertStatement(env, orderId, sub, lineDisplayName || customerName, customerId, pickupType),

@@ -63,6 +63,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_line_user_id ON customers(line_u
 CREATE INDEX IF NOT EXISTS idx_customers_custom_display_name ON customers(custom_display_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_line_code ON products(line_code) WHERE line_code IS NOT NULL;
 
+-- 一位客戶可綁定多個 LINE 帳號（migration-010）：line_user_id → customer_id 多對一對照。
+-- customers.line_user_id 保留為 legacy「第一個帳號」欄位；
+-- 查找一律先查本表、再回退 customers.line_user_id（見 worker/src/customer-accounts.js）。
+CREATE TABLE IF NOT EXISTS customer_line_accounts (
+  line_user_id TEXT PRIMARY KEY,
+  customer_id TEXT NOT NULL REFERENCES customers(id),
+  line_display_name TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_cla_customer ON customer_line_accounts(customer_id);
+
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   source_message_id TEXT NOT NULL UNIQUE REFERENCES line_order_inbox(message_id),

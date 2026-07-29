@@ -1801,6 +1801,9 @@ async function syncCustomersFromCloud() {
             customDisplayName: row.custom_display_name || local.customDisplayName || null,
             lineDisplayName: row.line_display_name || local.lineDisplayName || '',
             lineUserId: row.line_user_id || local.lineUserId || '',
+            // 綁定的 LINE 帳號數（migration-010 一客多帳號）：雲端沒回這欄（Worker 尚未升級）時，
+            // 有 line_user_id 就當 1，否則 0；只用來顯示「已綁 N 個 LINE 帳號」提示。
+            lineAccountsCount: row.line_accounts_count != null ? Number(row.line_accounts_count) || 0 : (row.line_user_id ? 1 : 0),
             // 電話只存在本機，雲端沒有這個欄位，保留本機值
             address: local.address || row.address || '',
             pickupType: local.pickupType || row.pickup_type || '',
@@ -2175,11 +2178,16 @@ function renderCustomers() {
     mobileList.innerHTML = mobileHtml || `<div style="text-align:center; color:var(--text-muted); padding:20px;">無客戶資料</div>`;
 }
 
-// 客戶列表小字提示：顯示 LINE 原始名稱，讓團主知道自訂名稱蓋掉了什麼
+// 客戶列表小字提示：顯示 LINE 原始名稱，讓團主知道自訂名稱蓋掉了什麼；
+// 綁了 2 個以上 LINE 帳號（migration-010 一客多帳號）再加一行「已綁 N 個 LINE 帳號」。
 function lineNameHintHtml(c) {
     const lineName = String((c && c.lineDisplayName) || '').trim();
-    if (!lineName || lineName === customerDisplayName(c)) return '';
-    return `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">LINE 名稱：${escapeHtml(lineName)}</div>`;
+    const accountCount = Number((c && c.lineAccountsCount) || 0);
+    const accountHint = accountCount >= 2
+        ? `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">已綁 ${accountCount} 個 LINE 帳號</div>`
+        : '';
+    if (!lineName || lineName === customerDisplayName(c)) return accountHint;
+    return `<div style="font-size:11px; color:var(--text-muted); font-weight:400;">LINE 名稱：${escapeHtml(lineName)}</div>${accountHint}`;
 }
 
 // 客戶編輯視窗提示：說明留空會回退 LINE 原始名稱
@@ -2187,13 +2195,18 @@ function renderCustomerLineNameHint(c) {
     const hint = document.getElementById('cust-line-name-hint');
     if (!hint) return;
     const lineName = String((c && c.lineDisplayName) || '').trim();
-    if (!lineName) {
+    const accountCount = Number((c && c.lineAccountsCount) || 0);
+    // 一客多帳號（migration-010）：綁了 2 個以上帳號時在編輯視窗提醒，避免團主誤以為只綁一個。
+    const accountNote = accountCount >= 2 ? `此客戶已綁 ${accountCount} 個 LINE 帳號，任一帳號留言都會自動配對。` : '';
+    if (!lineName && !accountNote) {
         hint.style.display = 'none';
         hint.textContent = '';
         return;
     }
     hint.style.display = 'block';
-    hint.textContent = `此客戶的 LINE 原始名稱為「${lineName}」；留空則顯示 LINE 原始名稱。`;
+    hint.textContent = lineName
+        ? `此客戶的 LINE 原始名稱為「${lineName}」；留空則顯示 LINE 原始名稱。${accountNote}`
+        : accountNote;
 }
 
 function onCustomerFilterChange() {
@@ -4141,8 +4154,14 @@ function renderLineInbox() {
         const messageIdEncoded = encodeURIComponent(row.message_id || row.messageId);
         const hasCustomer = Boolean(row.customer_id || row.customerId);
         const hasLineUser = Boolean(row.line_user_id || row.lineUserId);
+        // LINE- 開頭＝靜默收單自動建立的暫存客戶：仍可改綁到正式客戶（後端會搬移訂單並刪除暫存列）
+        const isAutoPendingCustomer = hasCustomer && /^LINE-/i.test(String(row.customer_id || row.customerId));
         const customerCell = hasCustomer
-            ? `${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_display_name || row.customer_nickname || row.customerNickname)}</small>`
+            ? `${escapeLineText(row.customer_id || row.customerId)}<small>${escapeLineText(row.customer_display_name || row.customer_nickname || row.customerNickname)}</small>${
+                (isAutoPendingCustomer && hasLineUser)
+                    ? `<br><button class="btn btn-secondary btn-sm" onclick="openLineBindModal('${messageIdEncoded}', '${escapeLineText(row.display_name || row.displayName)}')"><i class="fa-solid fa-link"></i> 綁定正式客戶</button>`
+                    : ''
+            }`
             : (hasLineUser
                 ? `<button class="btn btn-secondary btn-sm" onclick="openLineBindModal('${messageIdEncoded}', '${escapeLineText(row.display_name || row.displayName)}')"><i class="fa-solid fa-link"></i> 綁定客戶</button>`
                 : '<small>無 LINE ID</small>');
@@ -4266,5 +4285,8 @@ async function confirmLineBind() {
     // 綁定後把雲端客戶（含 LINE 原始名稱）拉回本機，客戶管理才看得到 LINE 名稱提示
     await syncCustomersFromCloud();
     await loadLineInbox();
-    alert(`綁定完成！${customer.id}｜${result.customer_display_name || customerDisplayName(customer)}，共回填 ${result.updated_messages} 則訊息。之後這位客戶的留言會自動配對。`);
+    // migration-010 之後綁定是「新增帳號」不是「換綁」：講清楚原本綁定的帳號不受影響。
+    const boundAccountCount = Number(result.line_accounts_count || 0);
+    const accountNote = boundAccountCount >= 2 ? `此客戶目前共綁定 ${boundAccountCount} 個 LINE 帳號，原本綁定的帳號不受影響。` : '';
+    alert(`綁定完成！已把這個 LINE 帳號新增綁定到 ${customer.id}｜${result.customer_display_name || customerDisplayName(customer)}，共回填 ${result.updated_messages} 則訊息。${accountNote}之後這位客戶用任一帳號留言都會自動配對。`);
 }

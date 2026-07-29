@@ -5,6 +5,7 @@ const Liff = require("./liff.js");
 const Inventory = require("./inventory.js");
 const CustomerName = require("../../customer-name.js");
 const CustomerPasteParse = require("../../customer-paste-parse.js");
+const CustomerAccounts = require("./customer-accounts.js");
 
 const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
 
@@ -57,11 +58,9 @@ function createDependencies(env) {
         // 僅在「該 LINE 帳號還沒綁定過」時，才用名稱做一次性輔助配對，且必須唯一命中、
         // 且該客戶尚未綁定其他 LINE 帳號，命中後也只用於後台配對建議，不會寫回任何名稱。
         async findCustomer(userId, displayName) {
-            const byLineUserId = userId
-                ? await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, pickup_type AS pickupType
-                    FROM customers WHERE line_user_id = ? LIMIT 1`).bind(userId).first()
-                : null;
-            if (byLineUserId) return { ...byLineUserId, displayName: CustomerName.resolveDisplayName(byLineUserId) };
+            // 多帳號查找（migration-010）：先查 customer_line_accounts、再回退 customers.line_user_id。
+            const byLineUserId = userId ? await CustomerAccounts.findCustomerByLineUserId(env, userId) : null;
+            if (byLineUserId) return { ...byLineUserId, pickupType: byLineUserId.pickup_type, displayName: CustomerName.resolveDisplayName(byLineUserId) };
             const name = String(displayName || "").trim();
             if (!name) return null;
             const candidates = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name, pickup_type AS pickupType
@@ -266,9 +265,14 @@ async function handleProductRoutes(request, env, url) {
 // 永不寫 line_user_id 與 line_display_name（識別碼與 LINE 原始名稱由 Webhook 維護）。
 // notes（備註／本名）同理：只存在 localStorage 的話換裝置就消失，所以 migration-008 之後一律存雲端。
 // ==========================================================================
-function customerSelectSql() {
+// withAccounts = customer_line_accounts 對照表已存在（migration-010）：多回一欄 line_accounts_count（綁定帳號數）。
+// 既有欄位一律原樣保留；前端拿不到這欄（Worker 尚未升級或表未建）時視為舊行為，向後相容。
+function customerSelectSql(withAccounts) {
+    const accountsColumn = withAccounts
+        ? "(SELECT COUNT(*) FROM customer_line_accounts a WHERE a.customer_id = customers.id) AS line_accounts_count, "
+        : "";
     return `SELECT id, nickname, line_display_name, custom_display_name, line_user_id, pickup_type, address, notes,
-        profile_status, created_at, updated_at, ${CustomerName.resolvedNameSql()} AS customer_display_name
+        profile_status, created_at, updated_at, ${accountsColumn}${CustomerName.resolvedNameSql()} AS customer_display_name
         FROM customers`;
 }
 
@@ -451,8 +455,9 @@ async function handleCustomerBulkImport(request, env) {
 }
 
 async function handleCustomerRoutes(request, env, url) {
+    const withAccounts = await CustomerAccounts.lineAccountsTableAvailable(env);
     if (request.method === "GET" && url.pathname === "/api/customers") {
-        const rows = await env.DB.prepare(`${customerSelectSql()} ORDER BY id LIMIT 2000`).all();
+        const rows = await env.DB.prepare(`${customerSelectSql(withAccounts)} ORDER BY id LIMIT 2000`).all();
         return json(rows.results);
     }
     // 必須排在 /api/customers/:id 之前，否則 "bulk-import" 會被當成客戶編號。
@@ -465,7 +470,7 @@ async function handleCustomerRoutes(request, env, url) {
     if (!id) return json({ error: "缺少客戶編號" }, 400);
 
     if (request.method === "GET") {
-        const row = await env.DB.prepare(`${customerSelectSql()} WHERE id = ? LIMIT 1`).bind(id).first();
+        const row = await env.DB.prepare(`${customerSelectSql(withAccounts)} WHERE id = ? LIMIT 1`).bind(id).first();
         return row ? json(row) : json({ error: "找不到客戶" }, 404);
     }
 
@@ -496,7 +501,7 @@ async function handleCustomerRoutes(request, env, url) {
                 updated_at = CURRENT_TIMESTAMP`)
             .bind(id, customer.customName || id, customer.customName, customer.pickupType, customer.address, customer.notes,
                 nameFlag, nameFlag, notesFlag).run();
-        const row = await env.DB.prepare(`${customerSelectSql()} WHERE id = ? LIMIT 1`).bind(id).first();
+        const row = await env.DB.prepare(`${customerSelectSql(withAccounts)} WHERE id = ? LIMIT 1`).bind(id).first();
         return json({ id, updated: true, customer: row });
     }
 
@@ -504,7 +509,13 @@ async function handleCustomerRoutes(request, env, url) {
         // 有訂單紀錄的客戶不可刪除（與前端規則一致，保護訂單參照與稽核）。
         const ordered = await env.DB.prepare("SELECT 1 FROM orders WHERE customer_id = ? LIMIT 1").bind(id).first();
         if (ordered) return json({ error: "此客戶已有訂單紀錄，不可刪除" }, 409);
-        const result = await env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(id).run();
+        // 先清 customer_line_accounts 對照列（FK 指向 customers），否則刪客戶會撞外鍵變 500。
+        const result = withAccounts
+            ? (await env.DB.batch([
+                env.DB.prepare("DELETE FROM customer_line_accounts WHERE customer_id = ?").bind(id),
+                env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(id)
+            ]))[1]
+            : await env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(id).run();
         if (!result.meta.changes) return json({ error: "找不到客戶" }, 404);
         return json({ id, deleted: true });
     }
@@ -572,8 +583,8 @@ async function processPostback(env, record) {
             return { processed: false, error: "商品已停售" };
         }
 
-        const existingCustomer = await env.DB.prepare(`SELECT id, nickname, line_display_name, custom_display_name
-            FROM customers WHERE line_user_id = ? LIMIT 1`).bind(record.lineUserId).first();
+        // 多帳號查找（migration-010）：先查 customer_line_accounts、再回退 customers.line_user_id。
+        const existingCustomer = await CustomerAccounts.findCustomerByLineUserId(env, record.lineUserId);
         const customerId = existingCustomer?.id || await stableId("LINE", record.lineUserId);
         // LINE 原始名稱只寫進 line_display_name；訂單顯示改用解析後名稱（團主自訂優先）。
         const lineDisplayName = String(record.displayName || "").slice(0, 100).trim();
@@ -589,14 +600,15 @@ async function processPostback(env, record) {
             .bind(orderId, parsed.productId).first() : null;
         const quantityBefore = Number(previousItem?.quantity || 0);
 
-        const customerStatement =
-            env.DB.prepare(CustomerName.CUSTOMER_UPSERT_SQL)
-                .bind(customerId, lineDisplayName || "LINE 客戶", lineDisplayName || null, record.lineUserId)
-        ;
+        // 建暫存客戶／更新 LINE 原始名稱＋補寫多帳號對照列。
+        // 第二個以上帳號解析出的客戶不可跑 CUSTOMER_UPSERT_SQL（會撞 customers.id 主鍵），詳見 customer-accounts.js。
+        const customerStatements = await CustomerAccounts.customerTouchStatements(env, {
+            customerId, existingCustomer, lineUserId: record.lineUserId, lineDisplayName
+        });
 
         if (parsed.action === "view_order") {
             await env.DB.batch([
-                customerStatement,
+                ...customerStatements,
                 env.DB.prepare("UPDATE line_webhook_events SET process_status = 'processed', error_message = NULL, processed_at = CURRENT_TIMESTAMP WHERE webhook_event_id = ?")
                     .bind(record.webhookEventId)
             ]);
@@ -618,7 +630,7 @@ async function processPostback(env, record) {
                 friendlyMessage, record.data, parsed.action === "set_quantity" ? "replace" : "cancel",
                 isoFromTimestamp(record.timestamp), LineOrder.STATUS.IMPORTED, orderId);
 
-        const preStatements = [customerStatement, inboxInsert];
+        const preStatements = [...customerStatements, inboxInsert];
         if (parsed.action === "set_quantity") {
             preStatements.push(env.DB.prepare(`INSERT OR IGNORE INTO orders
                 (id, source_message_id, customer_id, pickup_type, status, group_buy_id, line_group_id, total_amount, updated_at)
@@ -1401,20 +1413,25 @@ async function routeRequest(request, env, context) {
         const inbox = await env.DB.prepare("SELECT message_id, line_user_id, display_name FROM line_order_inbox WHERE message_id = ?").bind(messageId).first();
         if (!inbox) return json({ error: "找不到收件紀錄" }, 404);
         if (!inbox.line_user_id) return json({ error: "此訊息沒有 LINE 使用者 ID，無法綁定" }, 409);
-        const conflict = await env.DB.prepare(`SELECT id, profile_status, nickname, line_display_name, address
-            FROM customers WHERE line_user_id = ? AND id <> ?`).bind(inbox.line_user_id, customerId).first();
+        const claReady = await CustomerAccounts.lineAccountsTableAvailable(env);
+        // 這個 LINE 帳號目前的擁有者：先查 customer_line_accounts、再回退 legacy customers.line_user_id（migration-010）。
+        const owner = await CustomerAccounts.findCustomerByLineUserId(env, inbox.line_user_id);
+        const conflict = owner && owner.id !== customerId ? owner : null;
         if (conflict) {
             // LINE-<hex> 一律是 stableId 自動建立的暫存客戶（見 processPostback / liff.js），可安全合併；
             // 不再要求 profile_status 仍為 'pending'（團主可能已在客戶管理存過名稱／地址）。
             const isAutoPending = /^LINE-/i.test(conflict.id);
             if (!isAutoPending) return json({ error: `此 LINE 帳號已綁定客戶 ${conflict.id}，請先處理重複綁定` }, 409);
             // Postback 靜默收單會先建立 LINE-xxx 暫存客戶：綁定時把暫存客戶的訂單移轉到正式客戶後移除暫存列，
+            // 連同它在 customer_line_accounts 的對照列（FK 指向 customers，不清會撞外鍵），
             // 避免 line_user_id 唯一衝突（2026-07-22 驗收修正）。order_change_logs 保留原值作為稽核。
             try {
-                await env.DB.batch([
-                    env.DB.prepare("UPDATE orders SET customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ?").bind(customerId, conflict.id),
-                    env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(conflict.id)
-                ]);
+                const mergeStatements = [
+                    env.DB.prepare("UPDATE orders SET customer_id = ?, updated_at = CURRENT_TIMESTAMP WHERE customer_id = ?").bind(customerId, conflict.id)
+                ];
+                if (claReady) mergeStatements.push(env.DB.prepare("DELETE FROM customer_line_accounts WHERE customer_id = ?").bind(conflict.id));
+                mergeStatements.push(env.DB.prepare("DELETE FROM customers WHERE id = ?").bind(conflict.id));
+                await env.DB.batch(mergeStatements);
             } catch (error) {
                 if (isUniqueViolation(error)) {
                     return json({ error: `客戶 ${customerId} 在同一團購已有訂單，無法自動合併暫存客戶 ${conflict.id} 的訂單，請先在訂單管理處理` }, 409);
@@ -1427,6 +1444,12 @@ async function routeRequest(request, env, context) {
         const resolvedName = customName || lineDisplayName || customerId;
         // 沿用被合併暫存客戶的外送地址，避免客人在 LIFF 填好的地址在綁定後消失。
         const mergedAddress = conflict?.address == null || String(conflict.address).trim() === "" ? null : String(conflict.address);
+        // 綁定＝「新增一個帳號」而不是「換綁」（migration-010）：客戶已有 legacy line_user_id 時不得覆蓋
+        //（那是第一個帳號），只有客戶還沒有帳號時才填 legacy 欄位；第二個以上的帳號記在 customer_line_accounts。
+        // 對照表尚未建立（migration-010 未套用）時退回舊行為：直接覆蓋 legacy 欄位（一客一帳號）。
+        const lineUserIdUpdateSql = claReady
+            ? "COALESCE(customers.line_user_id, excluded.line_user_id)"
+            : "excluded.line_user_id";
         await env.DB.prepare(`INSERT INTO customers
             (id, nickname, custom_display_name, line_display_name, line_user_id, pickup_type, address, profile_status, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -1438,16 +1461,29 @@ async function routeRequest(request, env, context) {
                     NULLIF(TRIM(COALESCE(excluded.custom_display_name, '')), ''),
                     NULLIF(TRIM(COALESCE(COALESCE(NULLIF(TRIM(COALESCE(excluded.line_display_name, '')), ''), customers.line_display_name), '')), ''),
                     customers.nickname),
-                line_user_id = excluded.line_user_id,
+                line_user_id = ${lineUserIdUpdateSql},
                 pickup_type = COALESCE(excluded.pickup_type, customers.pickup_type),
                 profile_status = 'complete', updated_at = CURRENT_TIMESTAMP`)
             .bind(customerId, resolvedName, customName || null, lineDisplayName, inbox.line_user_id,
                 String(payload?.pickup_type || "").trim() || null, mergedAddress).run();
+        let lineAccountsCount = null;
+        if (claReady) {
+            // 這個帳號從此指向指定的正式客戶：新帳號＝INSERT；改綁＝DO UPDATE 搬 customer_id
+            //（自動改綁只允許發生在 bind-customer 這裡；LINE 事件端永不搬 customer_id）。
+            await env.DB.prepare(`INSERT INTO customer_line_accounts (line_user_id, customer_id, line_display_name)
+                VALUES (?, ?, ?)
+                ON CONFLICT(line_user_id) DO UPDATE SET customer_id = excluded.customer_id,
+                    line_display_name = CASE WHEN TRIM(COALESCE(excluded.line_display_name, '')) <> ''
+                        THEN excluded.line_display_name ELSE customer_line_accounts.line_display_name END`)
+                .bind(inbox.line_user_id, customerId, lineDisplayName).run();
+            const countRow = await env.DB.prepare("SELECT COUNT(*) AS c FROM customer_line_accounts WHERE customer_id = ?").bind(customerId).first();
+            lineAccountsCount = Number(countRow?.c || 0);
+        }
         const updated = await env.DB.prepare(`UPDATE line_order_inbox SET customer_id = ?, customer_nickname = ?,
             status = CASE WHEN status = ? THEN ? ELSE status END
             WHERE line_user_id = ?`)
             .bind(customerId, resolvedName, LineOrder.STATUS.CUSTOMER_UNMATCHED, LineOrder.STATUS.READY, inbox.line_user_id).run();
-        return json({ bound: true, customer_id: customerId, customer_display_name: resolvedName, updated_messages: updated.meta.changes });
+        return json({ bound: true, customer_id: customerId, customer_display_name: resolvedName, updated_messages: updated.meta.changes, line_accounts_count: lineAccountsCount });
     }
     if (request.method === "POST" && /^\/api\/line-inbox\/[^/]+\/import$/.test(url.pathname)) {
         const messageId = decodeURIComponent(url.pathname.split("/")[3]);

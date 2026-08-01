@@ -1,10 +1,11 @@
 const CACHE_PREFIX = 'ah-hsien-easy-buy-';
-const CACHE_NAME = `${CACHE_PREFIX}20260729-stock-reconcile-repair-v6`;
+const CACHE_NAME = `${CACHE_PREFIX}20260801-beginner-wizard-v7`;
 const CORE_ASSETS = [
     './',
     './index.html',
     './styles.css',
     './app.js',
+    './beginner-wizard.js',
     './pwa.js',
     './product-voice.js',
     './line-order.js',

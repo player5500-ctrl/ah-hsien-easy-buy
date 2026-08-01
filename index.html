@@ -144,6 +144,15 @@
                         </div>
                     </div>
 
+                    <button type="button" class="beginner-wizard-entry" onclick="BeginnerWizard.open()">
+                        <span class="beginner-wizard-entry-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+                        <span>
+                            <strong>第一次開團，從這裡開始</strong>
+                            <small>跟著步驟操作，不用熟悉電腦也能完成開團</small>
+                        </span>
+                        <i class="fa-solid fa-chevron-right"></i>
+                    </button>
+
                     <!-- 統計資訊 -->
                     <div class="stats-grid">
                         <div class="stat-card stat-orange">
@@ -1324,6 +1333,63 @@
         </div>
     </div>
 
+    <!-- 新手開團精靈：只組合既有商品、團購、庫存、LINE 文案與商品卡 API -->
+    <div class="modal-backdrop beginner-wizard-modal" id="beginner-wizard-modal" aria-hidden="true">
+        <div class="modal-container beginner-wizard-container" role="dialog" aria-modal="true" aria-labelledby="beginner-wizard-title">
+            <div class="modal-header beginner-wizard-header">
+                <div>
+                    <span class="wizard-kicker">新手開團</span>
+                    <h3 class="modal-title" id="beginner-wizard-title">跟著五個步驟完成開團</h3>
+                </div>
+                <button type="button" class="modal-close" onclick="BeginnerWizard.close()" aria-label="關閉新手開團">&times;</button>
+            </div>
+            <ol class="wizard-progress" aria-label="開團進度">
+                <li class="wizard-progress-item" data-step="1"><span>1</span><small>商品資料</small></li>
+                <li class="wizard-progress-item" data-step="2"><span>2</span><small>建立團購</small></li>
+                <li class="wizard-progress-item" data-step="3"><span>3</span><small>設定數量</small></li>
+                <li class="wizard-progress-item" data-step="4"><span>4</span><small>LINE 文案</small></li>
+                <li class="wizard-progress-item" data-step="5"><span>5</span><small>發布開團</small></li>
+            </ol>
+
+            <section class="wizard-special-panel" id="wizard-connection-panel" hidden>
+                <i class="fa-solid fa-plug-circle-xmark"></i>
+                <h2>尚未完成系統連線</h2>
+                <p>請先完成連線設定，再回來使用新手開團。</p>
+                <button type="button" class="btn btn-primary btn-lg" onclick="BeginnerWizard.goToSettings()">前往連線設定</button>
+            </section>
+
+            <section class="wizard-special-panel" id="wizard-resume-panel" hidden>
+                <i class="fa-solid fa-clock-rotate-left"></i>
+                <h2>上次的開團還沒完成，要繼續嗎？</h2>
+                <p>繼續後會回到上次儲存的步驟；重新開始只會清除新手流程暫存，不會刪除已建立的商品或團購。</p>
+                <div class="wizard-resume-actions">
+                    <button type="button" class="btn btn-primary btn-lg" onclick="BeginnerWizard.resume()">繼續上次進度</button>
+                    <button type="button" class="btn btn-secondary btn-lg" onclick="BeginnerWizard.startFresh()">重新開始</button>
+                </div>
+            </section>
+
+            <section id="wizard-main-panel" hidden>
+                <div class="wizard-scroll-area" id="wizard-scroll-area">
+                    <div id="wizard-step-content"></div>
+                    <p class="wizard-message" id="wizard-message" role="status" aria-live="polite" hidden></p>
+                </div>
+                <div class="wizard-footer">
+                    <button type="button" class="btn btn-secondary btn-lg" id="wizard-previous" onclick="BeginnerWizard.previous()">上一步</button>
+                    <button type="button" class="btn btn-primary btn-lg" id="wizard-next" onclick="BeginnerWizard.next()">儲存並繼續</button>
+                </div>
+            </section>
+
+            <section class="wizard-summary-panel" id="wizard-summary-panel" hidden>
+                <div class="wizard-scroll-area" id="wizard-summary-content"></div>
+                <div class="wizard-footer wizard-summary-actions">
+                    <button type="button" class="btn btn-secondary btn-lg" onclick="BeginnerWizard.viewOrders()">查看訂單</button>
+                    <button type="button" class="btn btn-primary btn-lg" onclick="BeginnerWizard.home()">回到首頁</button>
+                    <button type="button" class="wizard-text-button" onclick="BeginnerWizard.startFresh()">開始另一個團購</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <!-- 列印輸出區（僅列印時可見） -->
     <div id="print-area" aria-hidden="true"></div>
@@ -1334,7 +1400,8 @@
     <script src="customer-name.js?v=20260729-mobile-pwa"></script>
     <script src="customer-paste-parse.js?v=20260729-mobile-pwa"></script>
     <script src="line-note.js?v=20260729-line-note-legacy-group-fix"></script>
-    <script src="app.js?v=20260729-stock-reconcile-repair"></script>
+    <script src="app.js?v=20260801-beginner-wizard"></script>
+    <script src="beginner-wizard.js?v=20260801-beginner-wizard"></script>
     <script src="pwa.js?v=20260729-mobile-pwa"></script>
 
     <aside class="pwa-install-banner" id="pwaInstallBanner" role="status" aria-live="polite" hidden>

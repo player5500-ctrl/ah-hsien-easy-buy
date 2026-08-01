@@ -4305,3 +4305,107 @@ async function confirmLineBind() {
     const accountNote = boundAccountCount >= 2 ? `此客戶目前共綁定 ${boundAccountCount} 個 LINE 帳號，原本綁定的帳號不受影響。` : '';
     alert(`綁定完成！已把這個 LINE 帳號新增綁定到 ${customer.id}｜${result.customer_display_name || customerDisplayName(customer)}，共回填 ${result.updated_messages} 則訊息。${accountNote}之後這位客戶用任一帳號留言都會自動配對。`);
 }
+
+// 新手開團精靈只透過這個橋接層使用既有資料與 API。
+// 不建立第二套商品、團購、庫存或 LINE 發布資料。
+window.EasyGoApp = {
+    getState() {
+        return state;
+    },
+    hasConnection() {
+        return Boolean(getCloudApiKey());
+    },
+    switchView,
+    upsertLocalProduct(product) {
+        const index = state.products.findIndex(item => item.id === product.id);
+        if (index >= 0) state.products[index] = { ...state.products[index], ...product };
+        else state.products.push(product);
+        saveStateToStorage();
+        renderProducts();
+        return product;
+    },
+    syncProduct(product) {
+        return syncProductToCloud(product);
+    },
+    uploadProductImage(productId, file) {
+        return uploadProductImageToCloud(productId, file);
+    },
+    upsertLocalGroup(groupBuy) {
+        const index = state.groupBuys.findIndex(item => item.id === groupBuy.id);
+        if (index >= 0) state.groupBuys[index] = { ...state.groupBuys[index], ...groupBuy };
+        else state.groupBuys.push(groupBuy);
+        saveStateToStorage();
+        return groupBuy;
+    },
+    selectGroup(groupBuyId) {
+        state.activeGroupBuyId = groupBuyId;
+        saveStateToStorage();
+        renderCurrentGroupBuySelect();
+    },
+    syncGroup(groupBuy) {
+        return cloudFetch('/api/group-buys/' + encodeURIComponent(groupBuy.id), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: groupBuy.name,
+                starts_at: groupBuyDateTime(groupBuy.startDate),
+                ends_at: groupBuyDateTime(groupBuy.endDate, true),
+                status: groupBuyStatusForCloud(groupBuy.status),
+                notes: groupBuy.notes || null,
+                product_ids: groupBuy.productIds || []
+            })
+        });
+    },
+    updateLocalStock(groupBuyId, stockSettings) {
+        const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
+        if (groupBuy) groupBuy.stockSettings = stockSettings;
+        saveStateToStorage();
+    },
+    async syncStock(groupBuyId, stock) {
+        const result = await cloudFetch('/api/group-buys/' + encodeURIComponent(groupBuyId) + '/stock/' + encodeURIComponent(stock.productId), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(stock)
+        });
+        if (result.data?.stock) {
+            state.groupBuyStock[stockKey(groupBuyId, stock.productId)] = result.data.stock;
+        }
+        return result;
+    },
+    lineNote(products, options) {
+        return LineNote.generateLineNote(products, options);
+    },
+    lineGroups() {
+        return cloudFetch('/api/line/groups');
+    },
+    async publishCard(groupBuyId, productId, lineGroupId) {
+        const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
+        const product = state.products.find(item => item.id === productId);
+        if (!groupBuy || !product || !lineGroupId) {
+            return { error: 'INVALID_WIZARD_SELECTION', status: 400 };
+        }
+        const productResult = await syncProductToCloud(product);
+        if (productResult.error || productResult.skipped) return productResult;
+        const groupResult = await window.EasyGoApp.syncGroup(groupBuy);
+        if (groupResult.error || groupResult.skipped) return groupResult;
+        const payload = {
+            group_id: lineGroupId,
+            group_buy_id: groupBuy.id,
+            product_id: product.id,
+            show_image: true,
+            quantities: [1, 2, 3],
+            published_by: '新手開團精靈'
+        };
+        const previewResult = await cloudFetch('/api/line/flex-preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (previewResult.error || previewResult.skipped) return previewResult;
+        return cloudFetch('/api/line/publish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    }
+};

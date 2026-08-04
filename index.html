@@ -1450,7 +1450,7 @@
                 <button class="modal-close" onclick="closeLineNoteModal()">&times;</button>
             </div>
             <div class="modal-body">
-                <p style="color:var(--text-muted); margin-bottom:12px;">每次只產生一個本團啟用中商品的文案。切換商品後，下方預覽會立即更新。</p>
+                <p style="color:var(--text-muted); margin-bottom:12px;">一般商品是「一個商品＝一篇文案」；多口味／款式的主商品，所有口味會合併成「一篇文案」。切換選項後，下方預覽會立即更新。</p>
                 <div class="form-group">
                     <label for="line-note-product-select">選擇要產生文案的商品</label>
                     <select class="form-control" id="line-note-product-select" onchange="updateLineNotePreview()"></select>
@@ -1459,7 +1459,7 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeLineNoteModal()">關閉</button>
-                <button class="btn btn-secondary" onclick="downloadLineNoteImages()" title="只下載目前選取商品的圖片"><i class="fa-solid fa-download"></i> 下載所選商品圖</button>
+                <button class="btn btn-secondary" onclick="downloadLineNoteImages()" title="下載目前選取項目的圖片，多口味主商品會分別下載每個口味的圖片"><i class="fa-solid fa-download"></i> 下載所選商品圖</button>
                 <button class="btn btn-primary" onclick="copyLineNote()"><i class="fa-solid fa-copy"></i> 一鍵複製</button>
             </div>
         </div>

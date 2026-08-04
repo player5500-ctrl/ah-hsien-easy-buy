@@ -98,7 +98,7 @@ test("記事本文案視窗只列本團啟用商品，且沒有商品時不開�
     assert.match(source, /LineNote\.enabledProducts\(groupBuyLineNoteProducts\(groupBuy\)\)/);
     assert.match(source, /目前沒有啟用中的商品，請先啟用商品再產生文案！/);
     assert.ok(emptyGuard >= 0 && openModal > emptyGuard);
-    assert.match(source, /select\.value = lineNoteProducts\[0\]\.id/);
+    assert.match(source, /select\.value = lineNoteEntries\[0\]\.key/);
 });
 
 test("記事本文案商品來源有勾選代碼時只保留本團商品", () => {
@@ -120,10 +120,11 @@ test("舊團購沒有 productIds 時沿用啟用中商品，不再錯誤顯示�
     assert.doesNotMatch(LineNote.generateLineNote(enabled, { productId: "P001" }), /P002/);
 });
 
-test("下拉選單切換立即更新單商品預覽，一鍵複製只讀取目前預覽", () => {
+test("下拉選單切換立即更新預覽（單商品或合併口味），一鍵複製只讀取目前預覽", () => {
     assert.match(htmlSource, /選擇要產生文案的商品/);
     assert.match(htmlSource, /id="line-note-product-select" onchange="updateLineNotePreview\(\)"/);
-    assert.match(appSource, /LineNote\.generateLineNote\(lineNoteProducts, lineNoteOptions\(groupBuy, product\.id\)\)/);
+    assert.match(appSource, /LineNote\.generateLineNote\(lineNoteProducts, lineNoteOptions\(groupBuy, entry\.productId\)\)/);
+    assert.match(appSource, /LineNote\.generateGroupLineNote\(lineNoteProducts, \{/);
     assert.match(appSource, /document\.getElementById\('line-note-textarea'\)\.value/);
 });
 
@@ -172,12 +173,30 @@ test("groupVariants 只回傳指定主商品下的啟用口味，並依 variantS
     assert.deepEqual(variants.map(v => v.id), ["P024-A", "P024-B"]);
 });
 
-test("下載按鈕只處理目前選取商品，不再巡覽全部啟用商品", () => {
+test("下載按鈕：一般商品只下載目前選取的那一個；多口味主商品會依 productGroupId 分別下載每個口味（相同網址只下載一次）", () => {
     const downloadStart = appSource.indexOf("async function downloadLineNoteImages()");
     const copyStart = appSource.indexOf("async function copyLineNote()", downloadStart);
     const source = appSource.slice(downloadStart, copyStart);
 
     assert.match(htmlSource, /下載所選商品圖/);
-    assert.match(source, /LineNote\.selectedProductImage\(lineNoteProducts, selectedId\)/);
-    assert.doesNotMatch(source, /groupBuyProducts|for\s*\(/);
+    assert.match(source, /LineNote\.selectedProductImage\(lineNoteProducts, entry\.productId\)/);
+    assert.match(source, /lineNoteProducts\s*\n?\s*\.filter\(p => p\.productGroupId === entry\.productGroupId\)/);
+    assert.match(source, /seenUrls\.has\(url\)/);
+});
+
+test("resolveProductPhoto：口味沒有自己的圖片、且沿用主商品圖時，會退回主商品的 imageUrl", () => {
+    const resolveStart = appSource.indexOf("function resolveProductPhoto(product)");
+    const nextFnStart = appSource.indexOf("function groupBuyLineNoteProducts(groupBuy)", resolveStart);
+    const source = appSource.slice(resolveStart, nextFnStart);
+    assert.match(source, /product\.productGroupId/);
+    assert.match(source, /group\.imageUrl/);
+});
+
+test("buildLineNoteEntries：同一 productGroupId 的多個口味合併成一個下拉選項，一般商品仍各自一個選項", () => {
+    const entriesStart = appSource.indexOf("function buildLineNoteEntries(products)");
+    const nextFnStart = appSource.indexOf("function findLineNoteEntry(key)", entriesStart);
+    const source = appSource.slice(entriesStart, nextFnStart);
+    assert.match(source, /isGroup: true/);
+    assert.match(source, /isGroup: false/);
+    assert.match(source, /seenGroups\.has\(product\.productGroupId\)/);
 });

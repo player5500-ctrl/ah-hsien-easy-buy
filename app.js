@@ -2561,6 +2561,7 @@ async function syncAllProductsToCloud() {
 
 // --- LINE 記事本文案 ---
 let lineNoteProducts = [];
+let lineNoteEntries = [];
 
 function lineNoteOptions(groupBuy, productId) {
     return {
@@ -2571,20 +2572,74 @@ function lineNoteOptions(groupBuy, productId) {
     };
 }
 
-function updateLineNotePreview() {
-    const select = document.getElementById('line-note-product-select');
-    const textarea = document.getElementById('line-note-textarea');
-    if (!select || !textarea) return;
-    const product = LineNote.selectedProduct(lineNoteProducts, select.value);
-    const groupBuy = state.groupBuys.find(item => item.id === state.activeGroupBuyId);
-    textarea.value = product
-        ? LineNote.generateLineNote(lineNoteProducts, lineNoteOptions(groupBuy, product.id))
-        : '';
+// 口味／款式自己沒有上傳照片、且是「跟主商品同一張圖」的情況時，退回去用主商品的圖片網址；
+// 一般（沒有分組）的商品維持原樣，只看自己的 photo/imageUrl，不受影響。
+function resolveProductPhoto(product) {
+    if (!product) return '';
+    const own = String(product.photo || product.imageUrl || product.image_url || '').trim();
+    if (own) return own;
+    if (product.productGroupId) {
+        const group = (state.productGroups || []).find(g => g.id === product.productGroupId);
+        if (group && group.imageUrl) return String(group.imageUrl).trim();
+    }
+    return '';
 }
 
 function groupBuyLineNoteProducts(groupBuy) {
     if (!groupBuy) return [];
-    return LineNote.groupProducts(state.products, groupBuy.productIds);
+    return LineNote.groupProducts(state.products, groupBuy.productIds)
+        .map(product => ({ ...product, photo: resolveProductPhoto(product) }));
+}
+
+// 把同一個主商品（productGroupId 相同）的多個口味／款式合併成「一個下拉選項＝一篇文案」，
+// 跟 LINE 商品卡／新手精靈的合併邏輯一致；沒有分組的一般商品仍然是一個商品一個選項。
+function buildLineNoteEntries(products) {
+    const entries = [];
+    const seenGroups = new Set();
+    products.forEach(product => {
+        if (product.productGroupId) {
+            if (seenGroups.has(product.productGroupId)) return;
+            seenGroups.add(product.productGroupId);
+            const group = (state.productGroups || []).find(g => g.id === product.productGroupId);
+            const variantCount = products.filter(p => p.productGroupId === product.productGroupId).length;
+            entries.push({
+                key: `group:${product.productGroupId}`,
+                label: `${group ? group.name : product.name}（主商品，共${variantCount}種口味／款式合併為一篇文案）`,
+                isGroup: true,
+                productGroupId: product.productGroupId,
+                groupName: group ? group.name : product.name
+            });
+        } else {
+            entries.push({
+                key: `p:${product.id}`,
+                label: LineNote.productOptionLabel(product),
+                isGroup: false,
+                productId: product.id
+            });
+        }
+    });
+    return entries;
+}
+
+function findLineNoteEntry(key) {
+    return lineNoteEntries.find(entry => entry.key === key) || lineNoteEntries[0] || null;
+}
+
+function updateLineNotePreview() {
+    const select = document.getElementById('line-note-product-select');
+    const textarea = document.getElementById('line-note-textarea');
+    if (!select || !textarea) return;
+    const entry = findLineNoteEntry(select.value);
+    const groupBuy = state.groupBuys.find(item => item.id === state.activeGroupBuyId);
+    if (!entry) { textarea.value = ''; return; }
+    textarea.value = entry.isGroup
+        ? LineNote.generateGroupLineNote(lineNoteProducts, {
+            groupName: entry.groupName,
+            productGroupId: entry.productGroupId,
+            deadline: groupBuy?.endDate || '',
+            notes: groupBuy?.notes || ''
+        })
+        : LineNote.generateLineNote(lineNoteProducts, lineNoteOptions(groupBuy, entry.productId));
 }
 
 function openLineNoteModal() {
@@ -2594,11 +2649,12 @@ function openLineNoteModal() {
         alert('目前沒有啟用中的商品，請先啟用商品再產生文案！');
         return;
     }
+    lineNoteEntries = buildLineNoteEntries(lineNoteProducts);
     const select = document.getElementById('line-note-product-select');
-    select.innerHTML = lineNoteProducts.map(product =>
-        `<option value="${escapeLineText(product.id)}">${escapeLineText(LineNote.productOptionLabel(product))}</option>`
+    select.innerHTML = lineNoteEntries.map(entry =>
+        `<option value="${escapeLineText(entry.key)}">${escapeLineText(entry.label)}</option>`
     ).join('');
-    select.value = lineNoteProducts[0].id;
+    select.value = lineNoteEntries[0].key;
     updateLineNotePreview();
     document.getElementById('line-note-modal').classList.add('show');
 }
@@ -2607,29 +2663,61 @@ function closeLineNoteModal() {
     document.getElementById('line-note-modal').classList.remove('show');
 }
 
-// 只下載下拉選單目前選取的商品圖片。
+// 下載目前下拉選單選中項目的圖片；如果選中的是「一個主商品、多個口味」的合併選項，
+// 每個口味各自的圖片網址不同就分別下載（相同網址——通常是共用主商品圖——只下載一次）。
 async function downloadLineNoteImages() {
-    const selectedId = document.getElementById('line-note-product-select')?.value || '';
-    const target = LineNote.selectedProductImage(lineNoteProducts, selectedId);
-    if (!target) {
-        alert('所選商品沒有可下載的圖片（請先在商品管理上傳或填寫圖片網址）。');
+    const select = document.getElementById('line-note-product-select');
+    const entry = findLineNoteEntry(select?.value || '');
+    if (!entry) {
+        alert('所選商品沒有可下載的圖片（請先在商品管理上傳照片，或填寫圖片網址）。');
         return;
     }
-    try {
-        const response = await fetch(target.url);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        const extension = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${target.product.id}_${target.product.name}.${extension}`.replace(/[\\/:*?"<>|]/g, '_');
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(link.href), 10000);
-        alert('已下載所選商品圖。\n請在 LINE 記事本用「照片」功能附上。');
-    } catch (_error) {
-        alert(`所選商品圖片下載失敗：${target.product.id}\n可點文案中的圖片連結手動儲存。`);
+
+    const targets = [];
+    if (entry.isGroup) {
+        const seenUrls = new Set();
+        lineNoteProducts
+            .filter(p => p.productGroupId === entry.productGroupId)
+            .forEach(product => {
+                const url = String(product.photo || '').trim();
+                if (!/^https?:\/\//i.test(url) || seenUrls.has(url)) return;
+                seenUrls.add(url);
+                targets.push({ product, url });
+            });
+    } else {
+        const target = LineNote.selectedProductImage(lineNoteProducts, entry.productId);
+        if (target) targets.push(target);
+    }
+
+    if (!targets.length) {
+        alert('所選商品沒有可下載的圖片（請先在商品管理上傳照片，或勾選「跟主商品同一張圖」）。');
+        return;
+    }
+
+    let ok = 0;
+    const failed = [];
+    for (const target of targets) {
+        try {
+            const response = await fetch(target.url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const blob = await response.blob();
+            const extension = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${target.product.id}_${target.product.name}.${extension}`.replace(/[\\/:*?"<>|]/g, '_');
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+            ok += 1;
+        } catch (_error) {
+            failed.push(target.product.id);
+        }
+    }
+    if (ok) {
+        alert(`已下載 ${ok} 張圖片。\n請在 LINE 記事本用「照片」功能附上。${failed.length ? `\n（⚠️ ${failed.length} 張下載失敗：${failed.join('、')}）` : ''}`);
+    } else {
+        alert(`圖片下載失敗：${failed.join('、')}\n可點文案中的圖片連結手動儲存。`);
     }
 }
 

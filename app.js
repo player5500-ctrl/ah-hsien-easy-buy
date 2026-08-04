@@ -1106,6 +1106,45 @@ function selectedLinePublishQuantities() {
     return [...document.querySelectorAll('.line-publish-quantity:checked')].map(input => Number(input.value));
 }
 
+// 一個商品、多個口味：把同一個主商品（productGroupId 相同）的口味合併成「一個下拉選項＝一張合併商品卡」，
+// 客戶點卡後在 LIFF 選口味／數量（跟新手精靈 publishGroupCard 共用同一支後端 API，不是第二套發布流程）；
+// 沒有分組的一般商品仍然是一個商品一個選項、一張卡。
+let linePublishEntries = [];
+
+function buildLinePublishEntries(products) {
+    const entries = [];
+    const seenGroups = new Set();
+    products.forEach(product => {
+        if (product.productGroupId) {
+            if (seenGroups.has(product.productGroupId)) return;
+            seenGroups.add(product.productGroupId);
+            const group = (state.productGroups || []).find(g => g.id === product.productGroupId);
+            const variants = products.filter(p => p.productGroupId === product.productGroupId);
+            entries.push({
+                key: `group:${product.productGroupId}`,
+                label: `${group ? group.name : product.name}（主商品，共${variants.length}種口味／款式合併為一張商品卡）`,
+                isGroup: true,
+                productGroupId: product.productGroupId,
+                group,
+                variants
+            });
+        } else {
+            entries.push({
+                key: `p:${product.id}`,
+                label: `${product.id}｜${product.name}｜NT$ ${Number(product.price).toLocaleString()}`,
+                isGroup: false,
+                productId: product.id,
+                product
+            });
+        }
+    });
+    return entries;
+}
+
+function findLinePublishEntry(key) {
+    return linePublishEntries.find(entry => entry.key === key) || linePublishEntries[0] || null;
+}
+
 async function openLinePublishModal(groupBuyId) {
     const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
     if (!groupBuy) return alert('找不到團購活動。');
@@ -1114,9 +1153,10 @@ async function openLinePublishModal(groupBuyId) {
     if (!products.length) return alert('本團購沒有啟用中的商品（請在團購活動勾選商品，或啟用商品）。');
     if (!getCloudApiKey()) return alert('請先到「LINE 靜默收單設定」輸入管理 API 金鑰。');
 
+    linePublishEntries = buildLinePublishEntries(products);
     document.getElementById('line-publish-group-buy-id').value = groupBuyId;
-    document.getElementById('line-publish-product').innerHTML = products.map(product =>
-        `<option value="${escapeLineText(product.id)}">${escapeLineText(product.id)}｜${escapeLineText(product.name)}｜NT$ ${Number(product.price).toLocaleString()}</option>`
+    document.getElementById('line-publish-product').innerHTML = linePublishEntries.map(entry =>
+        `<option value="${escapeLineText(entry.key)}">${escapeLineText(entry.label)}</option>`
     ).join('');
     document.getElementById('line-publish-group').innerHTML = '<option value="">讀取 LINE 群組中...</option>';
     document.getElementById('line-publish-status').textContent = '';
@@ -1144,12 +1184,39 @@ function closeLinePublishModal() {
 
 function updateLineFlexPreview() {
     const groupBuy = state.groupBuys.find(item => item.id === document.getElementById('line-publish-group-buy-id').value);
-    const product = state.products.find(item => item.id === document.getElementById('line-publish-product').value) || state.products.find(item => item.enabled);
+    const entry = findLinePublishEntry(document.getElementById('line-publish-product').value);
     const preview = document.getElementById('line-flex-preview');
-    if (!groupBuy || !product) {
+    const quantityFieldset = document.getElementById('line-publish-quantity-fieldset');
+    if (!groupBuy || !entry) {
         preview.innerHTML = '<p>尚無可預覽內容</p>';
         return;
     }
+
+    if (entry.isGroup) {
+        // 合併商品卡只有一顆「選擇口味與數量」按鈕開 LIFF，沒有數量按鈕組合可選（跟後端 buildGroupFlexMessage 一致）。
+        if (quantityFieldset) quantityFieldset.hidden = true;
+        const coverPhoto = entry.group?.imageUrl || '';
+        const image = document.getElementById('line-publish-show-image').checked && /^https:\/\//i.test(coverPhoto)
+            ? `<img src="${escapeLineText(coverPhoto)}" alt="${escapeLineText(entry.group ? entry.group.name : '')}">`
+            : '';
+        const variantNames = entry.variants.map(v => v.variantName || v.name).join('／');
+        const pickupFrom = Math.min(...entry.variants.map(v => Number(v.pickupPrice ?? v.price ?? 0)));
+        const deliveryFrom = Math.min(...entry.variants.map(v => Number(v.deliveryPrice ?? v.price ?? 0)));
+        preview.innerHTML = `${image}<div class="line-flex-preview-body">
+            <h4>${escapeLineText(entry.group ? entry.group.name : '')}</h4>
+            <p>共有 ${entry.variants.length} 種口味：${escapeLineText(variantNames)}</p>
+            <div class="line-flex-price">自取 NT$ ${pickupFrom.toLocaleString()} 起</div>
+            <div class="line-flex-price">外送 NT$ ${deliveryFrom.toLocaleString()} 起</div>
+            <hr><p><strong>團購：</strong>${escapeLineText(groupBuy.name)}</p>
+            <p class="line-flex-deadline"><strong>收單截止：</strong>${escapeLineText(groupBuy.endDate)} 23:59</p>
+            <div class="line-flex-secondary-button">選擇口味與數量（開啟 LIFF）</div>
+            <small>按鈕下單不會在聊天室產生訊息，客戶進 LIFF 才選口味／數量</small>
+        </div>`;
+        return;
+    }
+
+    if (quantityFieldset) quantityFieldset.hidden = false;
+    const product = entry.product;
     const quantities = selectedLinePublishQuantities();
     const image = document.getElementById('line-publish-show-image').checked && /^https:\/\//i.test(product.photo || '')
         ? `<img src="${escapeLineText(product.photo)}" alt="${escapeLineText(product.name)}">`
@@ -1169,14 +1236,35 @@ function updateLineFlexPreview() {
 async function publishLineProduct() {
     const groupId = document.getElementById('line-publish-group').value;
     const groupBuy = state.groupBuys.find(item => item.id === document.getElementById('line-publish-group-buy-id').value);
-    const product = state.products.find(item => item.id === document.getElementById('line-publish-product').value);
-    const quantities = selectedLinePublishQuantities();
-    if (!groupId || !groupBuy || !product) return alert('請選擇 LINE 群組、團購與商品。');
-    if (!quantities.length) return alert('請至少選擇一個數量按鈕。');
-    if (!confirm(`確定將「${product.name}」商品卡發布到所選 LINE 群組？`)) return;
+    const entry = findLinePublishEntry(document.getElementById('line-publish-product').value);
+    if (!groupId || !groupBuy || !entry) return alert('請選擇 LINE 群組、團購與商品。');
 
     const button = document.getElementById('line-publish-confirm-btn');
     const status = document.getElementById('line-publish-status');
+
+    if (entry.isGroup) {
+        const groupName = entry.group ? entry.group.name : '';
+        if (!confirm(`確定將「${groupName}」合併商品卡（共 ${entry.variants.length} 種口味／款式，客戶點卡後在 LIFF 選口味）發布到所選 LINE 群組？`)) return;
+        button.disabled = true;
+        status.textContent = '正在同步團購資料，正在發布合併商品卡到 LINE...';
+        try {
+            const publishResult = await window.EasyGoApp.publishGroupCard(groupBuy.id, entry.productGroupId, groupId);
+            if (publishResult.error || publishResult.skipped) throw new Error(publishResult.error || '發布失敗');
+            alert(`LINE 合併商品卡發布成功！\n發布紀錄：${publishResult.data.publication_id}`);
+            closeLinePublishModal();
+        } catch (error) {
+            status.textContent = `發布失敗：${error.message}`;
+        } finally {
+            button.disabled = false;
+        }
+        return;
+    }
+
+    const product = entry.product;
+    const quantities = selectedLinePublishQuantities();
+    if (!quantities.length) return alert('請至少選擇一個數量按鈕。');
+    if (!confirm(`確定將「${product.name}」商品卡發布到所選 LINE 群組？`)) return;
+
     button.disabled = true;
     status.textContent = '正在同步團購與商品資料...';
     try {

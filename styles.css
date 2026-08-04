@@ -1317,6 +1317,13 @@ textarea.form-control {
     padding: 10px 14px;
 }
 
+/* 合併商品卡（多口味主商品）沒有數量按鈕組合可選，JS 會設 hidden 屬性；
+   上面那條規則的 class+element 選擇器比瀏覽器內建的 [hidden] 樣式優先權高，
+   沒有這條的話 hidden 屬性會被無視，欄位還是會顯示出來。 */
+.line-publish-options fieldset[hidden] {
+    display: none;
+}
+
 .line-publish-options legend {
     padding: 0 6px;
     color: var(--text-muted);

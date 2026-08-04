@@ -1202,11 +1202,20 @@ function updateLineFlexPreview() {
         const variantNames = entry.variants.map(v => v.variantName || v.name).join('／');
         const pickupFrom = Math.min(...entry.variants.map(v => Number(v.pickupPrice ?? v.price ?? 0)));
         const deliveryFrom = Math.min(...entry.variants.map(v => Number(v.deliveryPrice ?? v.price ?? 0)));
+        // 商品卡本身只會顯示「起」價（跟後端 buildGroupFlexMessage 一致，客戶進 LIFF 才看到每個口味的實際價格），
+        // 但後台預覽多列出每個口味自己的自取／外送價，方便管理員自己核對，不是漏了某個口味的價錢。
+        const variantPriceRows = entry.variants.map(v => {
+            const pickup = Number(v.pickupPrice ?? v.price ?? 0);
+            const delivery = Number(v.deliveryPrice ?? v.price ?? 0);
+            return `<div class="line-flex-variant-price-row"><strong>${escapeLineText(v.variantName || v.name)}</strong>：自取 NT$ ${pickup.toLocaleString()}／外送 NT$ ${delivery.toLocaleString()}</div>`;
+        }).join('');
         preview.innerHTML = `${image}<div class="line-flex-preview-body">
             <h4>${escapeLineText(entry.group ? entry.group.name : '')}</h4>
             <p>共有 ${entry.variants.length} 種口味：${escapeLineText(variantNames)}</p>
             <div class="line-flex-price">自取 NT$ ${pickupFrom.toLocaleString()} 起</div>
             <div class="line-flex-price">外送 NT$ ${deliveryFrom.toLocaleString()} 起</div>
+            <p class="text-muted" style="margin:4px 0 0;font-size:12px;">商品卡只會顯示「起」價，客戶進 LIFF 才會看到下面每個口味各自的實際價格：</p>
+            ${variantPriceRows}
             <hr><p><strong>團購：</strong>${escapeLineText(groupBuy.name)}</p>
             <p class="line-flex-deadline"><strong>收單截止：</strong>${escapeLineText(groupBuy.endDate)} 23:59</p>
             <div class="line-flex-secondary-button">選擇口味與數量（開啟 LIFF）</div>

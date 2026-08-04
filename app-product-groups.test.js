@@ -224,3 +224,45 @@ test("saveProductGroup：呼叫 POST /api/product-groups 並帶入 request_id �
     assert.equal(state.products.length, 2);
     assert.equal(state.products.map(p => p.id).join(","), "P024-A,P024-B");
 });
+
+test("停用整組後沒有其他方式重新開啟——現在補上 enableWholeProductGroup，只改主商品 enabled，不強制打開每個口味", async () => {
+    let putBody = null;
+    const app = loadApp({
+        respond: (url, init) => {
+            if (url.includes("/api/product-groups/PG031") && init.method === "PUT") {
+                putBody = JSON.parse(init.body);
+                return {};
+            }
+            return {};
+        }
+    });
+    app.localStorage.setItem("easygo_line_admin_api_key", "secret");
+    app.setProductGroups([{ id: "PG031", name: "水蜜桃", description: "", imageUrl: "", enabled: false }]);
+    app.setProducts([
+        { id: "P031-A", name: "水蜜桃 A.6粒", variantName: "A.6粒", productGroupId: "PG031", variantSort: 0, price: 400, enabled: true },
+        { id: "P031-B", name: "水蜜桃 B.8粒", variantName: "B.8粒", productGroupId: "PG031", variantSort: 1, price: 350, enabled: false }
+    ]);
+
+    assert.equal(typeof app.enableWholeProductGroup, "function");
+    await app.enableWholeProductGroup("PG031");
+
+    assert.equal(putBody.enabled, true, "PUT 給後端的 enabled 應該是 true");
+    const state = app.getState();
+    assert.equal(state.productGroups[0].enabled, true, "主商品本身要變成啟用");
+    assert.equal(state.products.find(p => p.id === "P031-A").enabled, true, "沒有被硬改的口味維持原狀");
+    assert.equal(state.products.find(p => p.id === "P031-B").enabled, false, "啟用整組不會連帶打開原本就停用的口味");
+});
+
+test("商品清單：主商品已停用時顯示「啟用整組」按鈕，啟用中時顯示「停用整組」", () => {
+    const app = loadApp();
+    app.setProductGroups([{ id: "PG031", name: "水蜜桃", description: "", imageUrl: "", enabled: false }]);
+    app.setProducts([
+        { id: "P031-A", name: "水蜜桃 A.6粒", variantName: "A.6粒", productGroupId: "PG031", variantSort: 0, price: 400, enabled: true }
+    ]);
+    app.setActiveGroupBuy("");
+    app.runInApp("renderProducts();");
+
+    const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+    assert.match(source, /group\.enabled[\s\S]{0,80}啟用整組/);
+    assert.match(source, /onclick="enableWholeProductGroup\('\$\{group\.id\}'\)"/);
+});

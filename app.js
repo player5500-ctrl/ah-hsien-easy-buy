@@ -1482,7 +1482,9 @@ function renderProducts() {
                         <button class="btn btn-secondary btn-sm" onclick="toggleProductGroupExpand('${group.id}')">${expanded ? '收合口味' : '展開口味'}</button>
                         <button class="btn btn-secondary btn-sm" onclick="editProductGroupMeta('${group.id}')"><i class="fa-solid fa-edit"></i> 編輯主商品</button>
                         <button class="btn btn-secondary btn-sm" onclick="openAddVariantModal('${group.id}')"><i class="fa-solid fa-plus"></i> 新增口味</button>
-                        <button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>
+                        ${group.enabled
+                            ? `<button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>`
+                            : `<button class="btn btn-primary btn-sm" onclick="enableWholeProductGroup('${group.id}')">啟用整組</button>`}
                     </div>
                 </td>
             </tr>
@@ -1498,7 +1500,9 @@ function renderProducts() {
                     <button class="btn btn-secondary btn-sm" onclick="toggleProductGroupExpand('${group.id}')">${expanded ? '收合口味' : '展開口味'}</button>
                     <button class="btn btn-secondary btn-sm" onclick="editProductGroupMeta('${group.id}')">編輯主商品</button>
                     <button class="btn btn-secondary btn-sm" onclick="openAddVariantModal('${group.id}')">新增口味</button>
-                    <button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>
+                    ${group.enabled
+                        ? `<button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>`
+                        : `<button class="btn btn-primary btn-sm" onclick="enableWholeProductGroup('${group.id}')">啟用整組</button>`}
                 </div>
             </div>
         `;
@@ -2135,6 +2139,25 @@ async function disableWholeProductGroup(groupId) {
     saveStateToStorage();
     renderProducts();
     alert(`已停用整組「${group.name}」（所有口味）！${cloudSyncSuffix(result)}`);
+}
+
+// 重新啟用整組：跟停用整組相反。只改主商品本身的 enabled，不會連帶把每個口味都打開
+// （停用整組會連帶停用所有口味；但啟用整組後，各口味仍要自己是「啟用中」才會實際開放訂購／可發布商品卡，
+// 避免不小心把管理者原本就故意停售的口味也一起打開）。
+async function enableWholeProductGroup(groupId) {
+    const group = state.productGroups.find(g => g.id === groupId);
+    if (!group) return;
+    if (!confirm(`確定要重新啟用整組「${group.name}」嗎？\n啟用整組後，各口味仍要自己是「啟用中」才會實際開放訂購或發布商品卡。`)) return;
+    const result = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: group.name, description: group.description || '', image_url: group.imageUrl || null, enabled: true })
+    });
+    if (result.error) { alert(`啟用整組失敗：${result.error}`); return; }
+    group.enabled = true;
+    saveStateToStorage();
+    renderProducts();
+    alert(`已重新啟用整組「${group.name}」！${cloudSyncSuffix(result)}`);
 }
 
 // ---- 新增／編輯單一口味 ----

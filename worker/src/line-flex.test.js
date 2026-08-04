@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { buildFlexMessage, createPostbackData, normalizeQuantities, parsePostbackData } = require("./line-flex.js");
+const { buildFlexMessage, buildGroupFlexMessage, createPostbackData, normalizeQuantities, parsePostbackData } = require("./line-flex.js");
 
 const groupBuy = { id: "GB001", name: "七月團購", ends_at: "2026-07-31T15:59:59.000Z" };
 const product = { id: "P001", name: "手工蛋捲", specs: "原味 12 入", price: 180, unit: "盒", image_url: "https://example.com/p1.jpg" };
@@ -95,6 +95,40 @@ test("新商品卡可顯示本團固定限量與售完為止，不寫死即時�
 test("數量組合會去重、限制一到三顆合法按鈕", () => {
     assert.deepEqual(normalizeQuantities([3, 1, 3, 0, 100, 2, 4]), [3, 1, 2]);
     assert.throws(() => buildFlexMessage({ groupBuy, product, quantities: [] }), /至少選擇一個數量按鈕/);
+});
+
+test("一個商品、多個口味：合併成一張主商品卡，只有一顆按鈕開 LIFF 帶 productGroupId", () => {
+    const productGroup = { id: "PG024", name: "德國 Pril 洗碗精", image_url: "https://example.com/pril.jpg" };
+    const variants = [
+        { id: "P024-A", name: "德國 Pril 洗碗精 檨檬", variant_name: "檨檬", price: 210, pickup_price: 210, delivery_price: 225 },
+        { id: "P024-B", name: "德國 Pril 洗碗精 蘆薈", variant_name: "蘆薈", price: 220, pickup_price: 220, delivery_price: 235 }
+    ];
+    const message = buildGroupFlexMessage({ groupBuy, productGroup, variants, liffId: LIFF_ID });
+    const serialized = JSON.stringify(message);
+
+    // 不得使用 displayText／價格藏在 postback／liff.line.me 以外的下單文字
+    assert.doesNotMatch(serialized, /displayText/i);
+    assert.doesNotMatch(serialized, /"price=/i);
+    assert.match(serialized, /共有 2 種口味：檨檬／蘆薈/);
+    assert.match(serialized, /自取 NT\$ 210 起/);
+    assert.match(serialized, /外送 NT\$ 225 起/);
+
+    const actions = collectButtons(message);
+    assert.equal(actions.length, 1, "合併卡只應有一顆按鈕");
+    const [button] = actions;
+    assert.equal(button.label, "選擇口味與數量");
+    assert.equal(button.type, "uri");
+    assert.match(button.uri, new RegExp(`liff\\.line\\.me/${LIFF_ID}`));
+    assert.match(button.uri, /groupBuyId=GB001/);
+    assert.match(button.uri, /productGroupId=PG024/);
+    assert.doesNotMatch(button.uri, /[?&]productId=/);
+});
+
+test("合併商品卡缺少 LIFF_ID 或沒有可發布的口味時要丟出明確錯誤", () => {
+    const productGroup = { id: "PG024", name: "德國 Pril 洗碗精" };
+    const variants = [{ id: "P024-A", variant_name: "檨檬", price: 210 }];
+    assert.throws(() => buildGroupFlexMessage({ groupBuy, productGroup, variants }), /LIFF_ID/);
+    assert.throws(() => buildGroupFlexMessage({ groupBuy, productGroup, variants: [], liffId: LIFF_ID }), /沒有可發布的口味/);
 });
 
 test("解析設定、取消與查看訂單；拒絕價格與非法數量", () => {

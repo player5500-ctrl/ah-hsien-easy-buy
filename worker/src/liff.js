@@ -8,6 +8,7 @@
 const CustomerName = require("../../customer-name.js");
 const Inventory = require("./inventory.js");
 const CustomerAccounts = require("./customer-accounts.js");
+const ProductGroups = require("./product-groups.js");
 
 const PICKUP_TYPES = new Set(["自取", "外送"]);
 
@@ -225,6 +226,46 @@ async function getGroupBuyProduct(env, groupBuyId, productId) {
     });
 }
 
+// 「一個商品、多個口味」客戶訂購頁：回傳主商品資料＋全部啟用口味（各自獨立價格／庫存），
+// 讓 LIFF 只顯示一張主商品卡，客戶點進去才選口味。已售完的口味仍會列出（前端負責標示不可選）。
+async function getGroupBuyProductGroup(env, groupBuyId, productGroupId) {
+    const group = await env.DB.prepare("SELECT id, name, description, image_url FROM product_groups WHERE id = ? AND enabled = 1")
+        .bind(productGroupId).first();
+    if (!group) throw new LiffHttpError(404, "找不到此主商品");
+    const groupBuy = await env.DB.prepare("SELECT status AS group_buy_status, ends_at FROM group_buys WHERE id = ? LIMIT 1")
+        .bind(groupBuyId).first();
+    if (!groupBuy) throw new LiffHttpError(404, "找不到團購");
+    const rows = (await env.DB.prepare(`SELECT p.id, p.name, p.variant_name, p.specs, p.unit, p.image_url, p.use_group_image,
+            p.price, p.pickup_price, p.delivery_price,
+            gbp.incoming_quantity, gbp.reserved_quantity, gbp.sellable_quantity,
+            gbp.sold_quantity, gbp.remaining_quantity, gbp.low_stock_threshold,
+            gbp.stock_status, gbp.stock_enabled
+        FROM products p
+        JOIN group_buy_products gbp ON gbp.product_id = p.id AND gbp.group_buy_id = ? AND gbp.enabled = 1
+        WHERE p.product_group_id = ? AND p.enabled = 1
+        ORDER BY p.variant_sort, p.id`).bind(groupBuyId, productGroupId).all()).results;
+    if (!rows.length) throw new LiffHttpError(404, "此主商品目前沒有可訂購的口味");
+    const variants = rows.map(row => ({
+        productId: row.id,
+        variantName: row.variant_name || row.name,
+        specs: row.specs,
+        unit: row.unit,
+        imageUrl: row.use_group_image ? (group.image_url || row.image_url) : row.image_url,
+        price: row.price,
+        pickupPrice: row.pickup_price,
+        deliveryPrice: row.delivery_price,
+        stock: Inventory.publicStock({ ...row, group_buy_id: groupBuyId, product_id: row.id })
+    }));
+    const stats = await computeStats(env, groupBuyId);
+    return json({
+        productGroup: { id: group.id, name: group.name, description: group.description, imageUrl: group.image_url },
+        variants,
+        groupBuyStatus: groupBuyState(groupBuy),
+        groupStockStatus: ProductGroups.summarizeGroupStock(variants.map(variant => variant.stock)),
+        stats
+    });
+}
+
 async function postSession(request, env) {
     const body = await readJsonBody(request);
     const { sub } = await verify(env, body.idToken);
@@ -414,6 +455,11 @@ async function dispatch(request, env, url) {
         return getGroupBuyProduct(env, decodeURIComponent(gbpMatch[1]), decodeURIComponent(gbpMatch[2]));
     }
 
+    const groupMatch = pathname.match(/^\/api\/liff\/group-buys\/([^/]+)\/product-groups\/([^/]+)$/);
+    if (method === "GET" && groupMatch) {
+        return getGroupBuyProductGroup(env, decodeURIComponent(groupMatch[1]), decodeURIComponent(groupMatch[2]));
+    }
+
     if (method === "GET" && pathname === "/api/liff/my-order") return getMyOrder(request, env, url);
     if (method === "POST" && pathname === "/api/liff/session") return postSession(request, env);
     if (method === "POST" && pathname === "/api/liff/orders/set-quantity") return setQuantity(request, env);
@@ -449,6 +495,7 @@ module.exports = {
     groupBuyState,
     computeStats,
     buildOrderView,
+    getGroupBuyProductGroup,
     stableId,
     LiffAuthError,
     LiffHttpError

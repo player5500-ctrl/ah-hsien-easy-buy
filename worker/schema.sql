@@ -19,6 +19,21 @@ CREATE TABLE IF NOT EXISTS customers (
   notes TEXT
 );
 
+-- product_groups：一個商品、多個口味／款式（migration-011）。
+-- 客戶只看到一個主商品；系統內部每個口味仍是 products 的獨立商品，各自獨立價格／庫存／訂單。
+-- 沒有 product_group_id 的舊商品視為單一商品，行為完全不變。
+CREATE TABLE IF NOT EXISTS product_groups (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  image_url TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_groups_enabled ON product_groups(enabled);
+
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -31,8 +46,14 @@ CREATE TABLE IF NOT EXISTS products (
   unit TEXT NOT NULL DEFAULT '份',
   description TEXT,
   image_url TEXT,
-  updated_at TEXT
+  updated_at TEXT,
+  product_group_id TEXT REFERENCES product_groups(id),
+  variant_name TEXT,
+  variant_sort INTEGER NOT NULL DEFAULT 0,
+  use_group_image INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE INDEX IF NOT EXISTS idx_products_group ON products(product_group_id, variant_sort);
 
 CREATE TABLE IF NOT EXISTS line_order_inbox (
   message_id TEXT PRIMARY KEY,
@@ -101,7 +122,10 @@ CREATE TABLE IF NOT EXISTS order_items (
   unit_price INTEGER NOT NULL DEFAULT 0,
   amount INTEGER NOT NULL DEFAULT 0,
   item_status TEXT NOT NULL DEFAULT 'active',
-  updated_at TEXT
+  updated_at TEXT,
+  product_name_snapshot TEXT,
+  variant_name_snapshot TEXT,
+  specs_snapshot TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_order_items_product ON order_items(product_code, order_id);

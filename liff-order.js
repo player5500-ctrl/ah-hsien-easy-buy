@@ -17,6 +17,7 @@
     var state = {
         groupBuyId: "",
         productId: "",
+        productGroupId: "",       // 一個商品、多個口味：主商品編號（PG開頭），有值時先顯示口味選擇畫面
         action: "",
         quantity: 1,
         product: null,             // { id,name,specs,unit,image_url,price,pickup_price,delivery_price }
@@ -26,7 +27,8 @@
         pickupType: "自取",
         address: "",                // 客戶外送地址（記憶體；來自本人 my-order/session）
         hasAddress: false,
-        submitting: false
+        submitting: false,
+        group: null                 // { productGroup, variants: [{product,stock}], stats }
     };
 
     var ALLOWED_ERRORS = {
@@ -69,6 +71,7 @@
         return {
             groupBuyId: String(p.get("groupBuyId") || "").trim(),
             productId: String(p.get("productId") || "").trim(),
+            productGroupId: String(p.get("productGroupId") || "").trim(),
             action: String(p.get("action") || "").trim(),
             quantity: p.get("quantity")
         };
@@ -103,6 +106,7 @@
 
         state.groupBuyId = picked.groupBuyId;
         state.productId = picked.productId;
+        state.productGroupId = picked.productGroupId;
         state.action = picked.action;
         var q = parseInt(picked.quantity, 10);
         state.quantity = (Number.isInteger(q) && q >= 1 && q <= 99) ? q : 1;
@@ -196,6 +200,10 @@
     function loadInitial() {
         return loadMyOrder()
             .then(function () {
+                if (state.productGroupId && !state.productId) {
+                    // 一個商品、多個口味：客戶點的是主商品卡，先顯示口味選擇畫面，選好口味才進入下單流程
+                    return loadGroup(state.productGroupId).then(function () { render(); });
+                }
                 if (state.productId) {
                     return loadProduct(state.productId).then(function () {
                         // URL 有帶 quantity（預選）；若我的訂單已有此品項，改用現有數量當預選
@@ -207,6 +215,44 @@
                 // myorder 模式：只顯示我的訂單
                 render();
             });
+    }
+
+    // 一個商品、多個口味：讀取主商品＋所有口味（各自獨立庫存／價格），只用於畫出選擇畫面。
+    function loadGroup(productGroupId) {
+        return apiRequest(
+            "/api/liff/group-buys/" + encodeURIComponent(state.groupBuyId) + "/product-groups/" + encodeURIComponent(productGroupId),
+            { method: "GET" },
+            ALLOWED_ERRORS.notFound
+        ).then(function (data) {
+            if (!data || !data.productGroup) throw new AppError(ALLOWED_ERRORS.notFound);
+            var gbStatus = data.groupBuyStatus;
+            if (gbStatus === "expired") throw new AppError(ALLOWED_ERRORS.expired);
+            if (gbStatus === "closed") throw new AppError(ALLOWED_ERRORS.closed);
+            state.group = data;
+        });
+    }
+
+    // 選好口味後：帶入該口味的 productId，走原本單一商品的下單流程（不重造第二套邏輯）。
+    function chooseFlavor(productId) {
+        if (state.submitting) return;
+        state.productId = productId;
+        showOnly("view-loading");
+        loadProduct(productId)
+            .then(function () {
+                var mine = findMyItem(productId);
+                state.quantity = mine ? clampQty(mine.quantity) : 1;
+                render();
+                scrollTop();
+            })
+            .catch(function (e) { failFromError(e, true); });
+    }
+
+    // 「← 換口味」：回到口味選擇畫面，但保留目前的「我的訂單」資料不重新讀取。
+    function backToFlavorPicker() {
+        state.productId = "";
+        state.product = null;
+        state.stock = null;
+        render();
     }
 
     function loadMyOrder() {
@@ -292,9 +338,52 @@
     // ── 畫面渲染 ───────────────────────────────
     function render() {
         showOnly("view-main");
+        renderFlavorPanel();
         renderOrderPanel();
         renderMyOrder();
         renderStats();
+    }
+
+    // 一個商品、多個口味：口味選擇畫面。售完的口味不可點選，但仍顯示（讓客戶知道有這個口味存在）。
+    function renderFlavorPanel() {
+        if (!state.productGroupId || state.productId || !state.group) {
+            hide("flavor-panel");
+            return;
+        }
+        show("flavor-panel");
+        var data = state.group;
+        text("flavor-group-name", (data.productGroup && data.productGroup.name) || "");
+        text("flavor-group-desc", (data.productGroup && data.productGroup.description) || "請選擇口味／款式");
+        var listEl = $("flavor-list");
+        var variants = data.variants || [];
+        if (!variants.length) {
+            listEl.innerHTML = '<div class="empty-hint">目前沒有可訂購的口味</div>';
+            return;
+        }
+        listEl.innerHTML = variants.map(function (row) {
+            var product = row.product || row;
+            var stock = row.stock;
+            var soldOut = Boolean(stock && stock.stockEnabled && stock.remainingQuantity <= 0);
+            var price = effectivePrice(product, "自取");
+            var stockLabel = !stock || !stock.stockEnabled ? "不限量"
+                : soldOut ? "已售完"
+                    : "剩餘 " + stock.remainingQuantity + " " + (product.unit || "份");
+            var img = product.image_url && /^https:\/\//i.test(product.image_url)
+                ? '<img class="flavor-item-image" src="' + escapeAttr(product.image_url) + '" alt="">'
+                : '<div class="flavor-item-image"></div>';
+            return '<button type="button" class="flavor-item' + (soldOut ? " sold-out" : "") + '" ' +
+                (soldOut ? "disabled" : "") + ' data-flavor-id="' + escapeAttr(product.id) + '">' +
+                img +
+                '<div class="flavor-item-info">' +
+                    '<div class="flavor-item-name">' + escapeHtml(product.variant_name || product.name) + '</div>' +
+                    '<div class="flavor-item-price">' + ntd(price) + " / " + escapeHtml(product.unit || "份") + '</div>' +
+                    '<div class="flavor-item-stock' + (soldOut ? " sold-out-label" : "") + '">' + escapeHtml(stockLabel) + '</div>' +
+                '</div>' +
+            '</button>';
+        }).join("");
+        listEl.querySelectorAll("[data-flavor-id]").forEach(function (btn) {
+            btn.addEventListener("click", function () { chooseFlavor(btn.getAttribute("data-flavor-id")); });
+        });
     }
 
     function renderOrderPanel() {
@@ -304,6 +393,7 @@
             return;
         }
         show("order-panel");
+        $("change-flavor-btn").classList.toggle("hidden", !state.productGroupId);
         var p = state.product;
         var img = $("product-image");
         if (p.image_url && /^https:\/\//i.test(p.image_url)) {
@@ -442,6 +532,7 @@
             }
         });
         $("confirm-btn").addEventListener("click", onConfirm);
+        $("change-flavor-btn").addEventListener("click", function () { backToFlavorPicker(); });
         $("cancel-btn").addEventListener("click", function () { closeWindow(); });
         $("close-btn").addEventListener("click", function () { closeWindow(); });
 

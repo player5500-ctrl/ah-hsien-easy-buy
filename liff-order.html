@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover">
     <meta name="format-detection" content="telephone=no">
     <title>阿賢 Easy 購｜線上下單</title>
-    <link rel="stylesheet" href="liff-order.css?v=20260728-stock">
+    <link rel="stylesheet" href="liff-order.css?v=20260804-flavor-picker">
     <!-- LINE LIFF SDK -->
     <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
 </head>
@@ -25,8 +25,16 @@
 
         <!-- 訂購主畫面 -->
         <div id="view-main" class="hidden">
+            <!-- 一個商品、多個口味：先選口味（有 productGroupId 且尚未選定口味時顯示） -->
+            <div id="flavor-panel" class="card hidden">
+                <h1 id="flavor-group-name" class="product-name"></h1>
+                <p id="flavor-group-desc" class="product-specs"></p>
+                <div id="flavor-list" class="flavor-list"></div>
+            </div>
+
             <!-- 商品卡 + 下單（有 productId 時顯示） -->
             <div id="order-panel" class="card hidden">
+                <button type="button" id="change-flavor-btn" class="btn btn-secondary btn-sm hidden" style="margin-bottom:12px;">← 換口味</button>
                 <img id="product-image" class="product-image hidden" alt="">
                 <h1 id="product-name" class="product-name"></h1>
                 <p id="product-specs" class="product-specs"></p>
@@ -103,6 +111,6 @@
         </div>
     </div>
 
-    <script src="liff-order.js?v=20260728-stock"></script>
+    <script src="liff-order.js?v=20260804-flavor-picker"></script>
 </body>
 </html>

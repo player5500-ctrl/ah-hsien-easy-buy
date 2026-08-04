@@ -127,6 +127,51 @@ test("下拉選單切換立即更新單商品預覽，一鍵複製只讀取目�
     assert.match(appSource, /document\.getElementById\('line-note-textarea'\)\.value/);
 });
 
+const groupedVariants = [
+    {
+        id: "P024-A", name: "德國 Pril 洗碗精 檨檬", variantName: "檨檬", productGroupId: "PG024", variantSort: 0,
+        specs: "653ml x 3瓶", price: 210, pickupPrice: 210, deliveryPrice: 225, enabled: true
+    },
+    {
+        id: "P024-B", name: "德國 Pril 洗碗精 蘆薈", variantName: "蘆薈", productGroupId: "PG024", variantSort: 1,
+        specs: "750ml x 3瓶", price: 210, pickupPrice: 210, deliveryPrice: 225, enabled: true
+    },
+    { id: "P099", name: "不相關商品", productGroupId: "", enabled: true }
+];
+
+test("一個商品、多個口味：同一主商品只產生一篇文案，各口味分別列出", () => {
+    const note = LineNote.generateGroupLineNote(groupedVariants, { groupName: "德國 Pril 洗碗精", productGroupId: "PG024" });
+    assert.match(note, /🛒 德國 Pril 洗碗精開團/);
+    assert.match(note, /A｜檨檬/);
+    assert.match(note, /653ml x 3瓶/);
+    assert.match(note, /自取210元／外送225元/);
+    assert.match(note, /B｜蘆薈/);
+    assert.match(note, /750ml x 3瓶/);
+    assert.match(note, /請點選LINE商品卡，再選擇口味及數量/);
+    assert.doesNotMatch(note, /不相關商品/);
+});
+
+test("各口味價格不同時分別列出各自的自取／外送價", () => {
+    const variants = [
+        { ...groupedVariants[0], pickupPrice: 210, deliveryPrice: 225 },
+        { ...groupedVariants[1], pickupPrice: 260, deliveryPrice: 275 }
+    ];
+    const note = LineNote.generateGroupLineNote(variants, { groupName: "德國 Pril 洗碗精", productGroupId: "PG024" });
+    assert.match(note, /A｜檨檬[\s\S]*自取210元／外送225元/);
+    assert.match(note, /B｜蘆薈[\s\S]*自取260元／外送275元/);
+});
+
+test("沒有主商品名稱或找不到任何口味時回傳空字串", () => {
+    assert.equal(LineNote.generateGroupLineNote(groupedVariants, { productGroupId: "PG024" }), "");
+    assert.equal(LineNote.generateGroupLineNote(groupedVariants, { groupName: "德國 Pril 洗碗精", productGroupId: "PG999" }), "");
+});
+
+test("groupVariants 只回傳指定主商品下的啟用口味，並依 variantSort 排序", () => {
+    const shuffled = [groupedVariants[1], groupedVariants[0], groupedVariants[2]];
+    const variants = LineNote.groupVariants(shuffled, "PG024");
+    assert.deepEqual(variants.map(v => v.id), ["P024-A", "P024-B"]);
+});
+
 test("下載按鈕只處理目前選取商品，不再巡覽全部啟用商品", () => {
     const downloadStart = appSource.indexOf("async function downloadLineNoteImages()");
     const copyStart = appSource.indexOf("async function copyLineNote()", downloadStart);

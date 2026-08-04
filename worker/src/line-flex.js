@@ -39,16 +39,76 @@ function deadlineLabel(value) {
     }).format(date);
 }
 
-// LIFF 深連結：開啟客戶端下單頁。URI 內只放團購/商品/數量/動作，
+// LIFF 深連結：開啟客戶端下單頁。URI 內只放團購/商品(或商品群組)/數量/動作，
 // 絕不放價格、userId 或 token（見 TASK 規範）。無 displayText，群組保持靜默。
-function liffOrderUri(liffId, { groupBuyId, productId, quantity, action } = {}) {
+function liffOrderUri(liffId, { groupBuyId, productId, productGroupId, quantity, action } = {}) {
     const qs = new URLSearchParams();
     if (groupBuyId != null && groupBuyId !== "") qs.set("groupBuyId", String(groupBuyId));
     if (productId != null && productId !== "") qs.set("productId", String(productId));
+    if (productGroupId != null && productGroupId !== "") qs.set("productGroupId", String(productGroupId));
     if (quantity != null && quantity !== "") qs.set("quantity", String(quantity));
     if (action != null && action !== "") qs.set("action", String(action));
     const query = qs.toString();
     return `https://liff.line.me/${liffId}${query ? `?${query}` : ""}`;
+}
+
+// 最低自取／外送價：多口味價格不同時，商品卡顯示「起」價，實際價格客戶進入 LIFF 選口味後才看到。
+function minPrice(variants, field, fallbackField) {
+    const values = variants.map(variant => {
+        const value = variant[field];
+        return value == null ? Number(variant[fallbackField] || 0) : Number(value);
+    });
+    return values.length ? Math.min(...values) : 0;
+}
+
+// 一個商品、多個口味：合併成一張主商品卡（預設行為，見需求文件第八節）。
+// 只提供一顆「選擇口味與數量」按鈕開啟 LIFF（帶 productGroupId，不帶 productId），
+// 客戶進入 LIFF 才選口味／數量／取貨方式；不使用 displayText、不使用 Postback、不使用 Reply API。
+function buildGroupFlexMessage({ groupBuy, productGroup, variants, showImage = true, liffId }) {
+    if (typeof liffId !== "string" || !liffId.trim()) {
+        throw new Error("合併商品卡需要設定 LIFF_ID，才能讓客戶進入 LIFF 選擇口味");
+    }
+    if (!Array.isArray(variants) || !variants.length) {
+        throw new Error("此主商品目前沒有可發布的口味");
+    }
+    const gid = String(groupBuy.id);
+    const groupId = String(productGroup.id);
+    const variantNames = variants.map(variant => variant.variant_name || variant.name).join("／");
+    const pickupFrom = minPrice(variants, "pickup_price", "price");
+    const deliveryFrom = minPrice(variants, "delivery_price", "price");
+
+    const bodyContents = [
+        { type: "text", text: String(productGroup.name), weight: "bold", size: "xl", wrap: true },
+        { type: "text", text: `共有 ${variants.length} 種口味：${variantNames}`, size: "sm", color: "#666666", wrap: true, margin: "sm" },
+        {
+            type: "box", layout: "baseline", margin: "lg", contents: [
+                { type: "text", text: `自取 NT$ ${pickupFrom.toLocaleString("zh-TW")} 起`, weight: "bold", size: "md", color: "#E86A33", flex: 0 }
+            ]
+        },
+        {
+            type: "box", layout: "baseline", margin: "sm", contents: [
+                { type: "text", text: `外送 NT$ ${deliveryFrom.toLocaleString("zh-TW")} 起`, size: "sm", color: "#777777", flex: 0 }
+            ]
+        },
+        { type: "separator", margin: "lg" },
+        { type: "text", text: `團購：${groupBuy.name}`, size: "sm", wrap: true, margin: "lg" },
+        { type: "text", text: `收單截止：${deadlineLabel(groupBuy.ends_at)}`, size: "sm", color: "#C0392B", wrap: true, margin: "sm" },
+        {
+            type: "button", height: "sm", style: "primary", color: "#E86A33", margin: "xl",
+            action: { type: "uri", label: "選擇口味與數量", uri: liffOrderUri(liffId, { groupBuyId: gid, productGroupId: groupId }) }
+        },
+        { type: "text", text: "按鈕下單不會在聊天室產生訊息", size: "xs", color: "#888888", align: "center", wrap: true, margin: "md" }
+    ];
+
+    const bubble = { type: "bubble", body: { type: "box", layout: "vertical", contents: bodyContents } };
+    if (showImage && /^https:\/\//i.test(productGroup.image_url || "")) {
+        bubble.hero = { type: "image", url: productGroup.image_url, size: "full", aspectRatio: "20:13", aspectMode: "cover" };
+    }
+    return {
+        type: "flex",
+        altText: `${productGroup.name}｜${groupBuy.name}（按鈕靜默下單）`.slice(0, 400),
+        contents: bubble
+    };
 }
 
 function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1, 2, 3], liffId = null }) {
@@ -129,4 +189,7 @@ function buildFlexMessage({ groupBuy, product, showImage = true, quantities = [1
     };
 }
 
-module.exports = { normalizeQuantities, createPostbackData, parsePostbackData, buildFlexMessage, deadlineLabel, liffOrderUri };
+module.exports = {
+    normalizeQuantities, createPostbackData, parsePostbackData, buildFlexMessage, buildGroupFlexMessage,
+    deadlineLabel, liffOrderUri
+};

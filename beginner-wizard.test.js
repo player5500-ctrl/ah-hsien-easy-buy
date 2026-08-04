@@ -100,3 +100,41 @@ test("建置與離線快取包含新手精靈模組", () => {
     assert.match(serviceWorkerSource, /20260801-beginner-wizard-v7/);
     assert.match(html, /beginner-wizard\.js\?v=20260801-beginner-wizard/);
 });
+
+// --- 一個商品、多個口味／款式：新手開團精靈驗收 ---
+
+test("草稿預設不是多口味模式，且帶有主商品共用欄位的空白結構", () => {
+    const draft = Wizard.createDraft();
+    assert.equal(draft.isGrouped, false);
+    assert.deepEqual(draft.groupMeta, { name: "", description: "", photo: "" });
+    assert.equal(draft.groupId, "");
+});
+
+test("有沒有不同口味的問法完全不出現 product_group_id／variant／SKU／D1／API 等術語", () => {
+    const choiceBlock = wizardSource.match(/function groupChoiceHtml\(\)[\s\S]*?\n    }/)[0];
+    assert.match(choiceBlock, /這個商品有不同口味／款式嗎/);
+    assert.doesNotMatch(choiceBlock, /product_group_id|variant|SKU|D1|API/i);
+});
+
+test("多口味主商品建立走既有的 createProductGroup 橋接方法，不建立第二套商品資料流程", () => {
+    assert.match(wizardSource, /app\(\)\.createProductGroup\(/);
+    assert.match(wizardSource, /app\(\)\.addProductGroupVariant\(/);
+    assert.match(wizardSource, /app\(\)\.publishGroupCard\(/);
+    // request_id 防重複點擊：建立主商品與補新增口味都要帶
+    assert.match(wizardSource, /"wiz-pg-"/);
+    assert.match(wizardSource, /"wiz-pgv-"/);
+    assert.match(wizardSource, /request_id:\s*requestId/);
+});
+
+test("一個商品、多個口味的合併文案只有一個勾選框，勾選時所有口味一起標記完成", () => {
+    const markBlock = wizardSource.match(/function markLinePosted\(checked\)[\s\S]*?\n    }/)[0];
+    assert.match(markBlock, /draft\.isGrouped/);
+    assert.match(markBlock, /draft\.productIds\.slice\(\)/);
+});
+
+test("合併商品卡是預設路徑，分開發布每個口味只是管理者主動切換才會用到的既有流程", () => {
+    const renderPublishBlock = wizardSource.match(/function renderPublish\(\)[\s\S]*?\n    }/)[0];
+    assert.match(renderPublishBlock, /draft\.isGrouped && !draft\.publishSeparately/);
+    assert.match(wizardSource, /改成分開發布每個口味/);
+    assert.match(wizardSource, /改回發布一張合併商品卡/);
+});

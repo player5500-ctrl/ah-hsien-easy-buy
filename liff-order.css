@@ -96,6 +96,42 @@ html, body {
 }
 .pickup-btn.active { border-color: var(--primary-orange); background: rgba(255, 122, 0, 0.08); color: var(--primary-orange); }
 
+/* 一個商品、多個口味：口味選擇畫面（大按鈕、明顯售完狀態、無水平溢出，符合手機版要求） */
+.flavor-list { display: flex; flex-direction: column; gap: 12px; }
+.flavor-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 14px;
+    border: 2px solid var(--border-light);
+    border-radius: var(--radius-md);
+    background: var(--card-white);
+    text-align: left;
+    cursor: pointer;
+    min-height: 64px;
+    -webkit-tap-highlight-color: transparent;
+}
+.flavor-item:disabled,
+.flavor-item.sold-out {
+    opacity: 0.55;
+    cursor: not-allowed;
+    background: #f3f3f3;
+}
+.flavor-item-image {
+    width: 48px;
+    height: 48px;
+    border-radius: 10px;
+    object-fit: cover;
+    flex-shrink: 0;
+    background: var(--bg-warm-gray, #f3f3f3);
+}
+.flavor-item-info { flex: 1; min-width: 0; }
+.flavor-item-name { font-weight: 800; font-size: 1.05rem; word-break: break-word; }
+.flavor-item-price { color: var(--primary-orange); font-weight: 700; margin-top: 2px; }
+.flavor-item-stock { font-size: 0.85rem; color: var(--text-muted); margin-top: 2px; }
+.flavor-item-stock.sold-out-label { color: #991b1b; font-weight: 700; }
+
 .address-field { margin: 12px 0 4px; }
 .address-input {
     width: 100%;

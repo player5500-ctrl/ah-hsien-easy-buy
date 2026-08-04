@@ -32,6 +32,9 @@
     function createDraft() {
         return {
             version: 1, step: 1, completed: false,
+            // 一個商品、多個口味：isGrouped=true 時，productDrafts 每一項是「口味」，
+            // groupMeta 是共用的主商品名稱／說明／圖片，groupId 是伺服器建立後回傳的主商品編號（PG開頭）。
+            isGrouped: false, groupMeta: { name: "", description: "", photo: "" }, groupId: "",
             productDrafts: [blankProduct()], productIds: [],
             groupBuyId: "", group: { name: "", endDate: "", notes: "" },
             stockSettings: {}, selectedProductId: "",
@@ -240,11 +243,12 @@
 
     function productCard(product, index) {
         const preview = previews.get(product.key) || product.photo || "";
+        const grouped = Boolean(draft.isGrouped);
         return '<article class="wizard-product-card" data-product-key="' + escapeHtml(product.key) + '">' +
-            '<div class="wizard-product-heading"><strong>商品 ' + (index + 1) + '</strong>' +
+            '<div class="wizard-product-heading"><strong>' + (grouped ? "口味 " + (index + 1) : "商品 " + (index + 1)) + '</strong>' +
             (index ? '<button type="button" class="wizard-text-button" onclick="BeginnerWizard.removeFlavor(\'' + escapeHtml(product.key) + '\')">移除此口味</button>' : "") + '</div>' +
-            formField("商品名稱", "name", product.name, "例如：Pril 洗碗精") +
-            formField("規格或口味", "specs", product.specs, "例如：檸檬 653ml×3瓶") +
+            (grouped ? formField("口味／款式名稱", "name", product.name, "例如：檨檬") : formField("商品名稱", "name", product.name, "例如：Pril 洗碗精")) +
+            formField("規格", "specs", product.specs, "例如：653ml×3瓶") +
             '<div class="wizard-price-grid">' +
             formField("自取價", "pickupPrice", product.pickupPrice, "", "number") +
             formField("外送價", "deliveryPrice", product.deliveryPrice, "", "number") + '</div>' +
@@ -265,14 +269,48 @@
             field + '" hidden></small></div>';
     }
 
+    // 是否有不同口味／款式：一律用「純文字白話」問法，不出現 product_group_id／variant／SKU／D1／API 等字眼。
+    function groupChoiceHtml() {
+        const grouped = Boolean(draft.isGrouped);
+        return '<div class="wizard-form-group wizard-grouped-choice"><label>這個商品有不同口味／款式嗎？</label>' +
+            '<div class="wizard-choice-buttons">' +
+            '<label class="wizard-choice-option"><input type="radio" name="wizard-grouped" value="no" ' + (grouped ? "" : "checked") +
+            ' onchange="BeginnerWizard.setGrouped(false)"> 沒有，是單一商品</label>' +
+            '<label class="wizard-choice-option"><input type="radio" name="wizard-grouped" value="yes" ' + (grouped ? "checked" : "") +
+            ' onchange="BeginnerWizard.setGrouped(true)"> 有，同一個商品有不同口味／款式（客戶只會看到一個商品，選好口味再下單）</label>' +
+            '</div></div>';
+    }
+
+    function groupMetaHtml() {
+        if (!draft.isGrouped) return "";
+        return '<div id="wizard-group-meta" class="wizard-group-meta-card">' +
+            formField("主商品名稱", "groupName", draft.groupMeta.name, "例如：德國 Pril 洗碗精") +
+            '<div class="wizard-form-group"><label>主商品說明（選填）</label><textarea class="form-control" data-field="groupDescription" rows="2" placeholder="所有口味共用的介紹文字">' +
+            escapeHtml(draft.groupMeta.description) + '</textarea></div></div>';
+    }
+
+    function setGrouped(isGrouped) {
+        rememberProducts();
+        draft.isGrouped = Boolean(isGrouped);
+        // 切換模式時保留使用者已輸入的口味卡內容，只是重新解讀「商品名稱」欄位的意義（單一商品名稱 vs 口味名稱）
+        saveDraft();
+        renderProducts();
+    }
+
     function renderProducts() {
         element("wizard-step-content").innerHTML =
             '<div class="wizard-step-copy"><span>第一步</span><h2>先把商品資料放進來</h2><p>請填寫這次要賣的商品，填好後按下一步。</p></div>' +
+            groupChoiceHtml() + groupMetaHtml() +
             '<div id="wizard-products">' + draft.productDrafts.map(productCard).join("") + '</div>' +
-            '<button type="button" class="btn btn-secondary wizard-full-button" onclick="BeginnerWizard.addFlavor()"><i class="fa-solid fa-plus"></i> 再新增一個口味</button>';
+            '<button type="button" class="btn btn-secondary wizard-full-button" onclick="BeginnerWizard.addFlavor()"><i class="fa-solid fa-plus"></i> 再新增一個' + (draft.isGrouped ? "口味" : "商品") + '</button>';
     }
 
     function rememberProducts() {
+        const metaScope = element("wizard-group-meta");
+        if (metaScope) {
+            draft.groupMeta.name = (metaScope.querySelector('[data-field="groupName"]') || {}).value || draft.groupMeta.name;
+            draft.groupMeta.description = (metaScope.querySelector('[data-field="groupDescription"]') || {}).value || "";
+        }
         root.document.querySelectorAll(".wizard-product-card").forEach(function (card) {
             const product = draft.productDrafts.find(function (item) { return item.key === card.dataset.productKey; });
             if (!product) return;
@@ -320,6 +358,12 @@
     async function saveProducts() {
         rememberProducts();
         let valid = true;
+        if (draft.isGrouped && !String(draft.groupMeta.name || "").trim()) {
+            message("請先填寫主商品名稱。", "error");
+            const metaScope = element("wizard-group-meta");
+            if (metaScope) fieldError(metaScope, "groupName", "主商品名稱還沒填寫");
+            valid = false;
+        }
         root.document.querySelectorAll(".wizard-product-card").forEach(function (card) {
             clearErrors(card);
             const product = draft.productDrafts.find(function (item) { return item.key === card.dataset.productKey; });
@@ -332,6 +376,8 @@
             message("請先完成上方標示的商品資料。", "error");
             return false;
         }
+        if (draft.isGrouped) return saveProductGroup();
+
         const assigned = new Set(state().products.map(function (product) { return product.id; }));
         draft.productDrafts.forEach(function (product) {
             if (!product.productId) {
@@ -364,6 +410,84 @@
             }
         }
         message("商品已經儲存好了");
+        return true;
+    }
+
+    // 一個商品、多個口味：建立主商品＋所有口味（單一 API、伺服器產生編號），
+    // 已建立過（draft.groupId 已存在）時視為「新增／編輯口味」，改用新增口味 API 補齊尚未建立的口味。
+    async function saveProductGroup() {
+        if (draft.groupId) return saveAdditionalVariants();
+        const requestId = "wiz-pg-" + Date.now().toString(36) + "-" + Math.random().toString(16).slice(2);
+        const variants = draft.productDrafts.map(function (item) {
+            return {
+                variant_name: item.name.trim(), specs: item.specs.trim(),
+                price: Math.round(Number(item.pickupPrice)), pickup_price: Math.round(Number(item.pickupPrice)),
+                delivery_price: Math.round(Number(item.deliveryPrice)), unit: item.unit.trim(),
+                enabled: true, description: item.description.trim(),
+                image_url: /^https?:\/\//i.test(item.photo || "") ? item.photo : null
+            };
+        });
+        const result = await app().createProductGroup({
+            request_id: requestId, name: draft.groupMeta.name.trim(), description: draft.groupMeta.description.trim(),
+            enabled: true, variants: variants
+        });
+        if (result.error || result.skipped) throw new Error(friendlyError(result, "主商品儲存失敗，請稍後再試一次"));
+        if (result.data && result.data.duplicate) {
+            message("偵測到重複提交，已忽略這次重複的建立請求。");
+            return true;
+        }
+        draft.groupId = result.data.id;
+        const serverVariants = result.data.variants || [];
+        draft.productDrafts.forEach(function (item, index) {
+            const row = serverVariants[index];
+            item.productId = row ? row.id : (result.data.variantIds && result.data.variantIds[index]);
+        });
+        draft.productIds = draft.productDrafts.map(function (item) { return item.productId; }).filter(Boolean);
+        saveDraft();
+        // 圖片上傳走既有的單一商品圖片上傳端點（口味在 products 表內本來就是一般商品列）
+        for (const item of draft.productDrafts) {
+            const file = files.get(item.key);
+            if (file && !item.photo && item.productId) {
+                const uploaded = await app().uploadProductImage(item.productId, file);
+                if (uploaded.data && uploaded.data.image_url) {
+                    item.photo = uploaded.data.image_url;
+                    saveDraft();
+                }
+            }
+        }
+        message("主商品與所有口味都已經儲存好了");
+        return true;
+    }
+
+    // 已建立主商品後（例如使用者上一步失敗重試才會走到這裡），把尚未取得 productId 的口味卡
+    // 透過「新增口味」API 逐一補上，絕不重新呼叫建立主商品（避免建立第二個主商品）。
+    async function saveAdditionalVariants() {
+        for (const item of draft.productDrafts) {
+            if (item.productId) continue;
+            const payload = {
+                variant_name: item.name.trim(), specs: item.specs.trim(),
+                price: Math.round(Number(item.pickupPrice)), pickup_price: Math.round(Number(item.pickupPrice)),
+                delivery_price: Math.round(Number(item.deliveryPrice)), unit: item.unit.trim(),
+                enabled: true, description: item.description.trim(),
+                image_url: /^https?:\/\//i.test(item.photo || "") ? item.photo : null,
+                request_id: "wiz-pgv-" + Date.now().toString(36) + "-" + Math.random().toString(16).slice(2)
+            };
+            const result = await app().addProductGroupVariant(draft.groupId, payload);
+            if (result.error || result.skipped) throw new Error(friendlyError(result, "口味儲存失敗，請稍後再試一次"));
+            if (!(result.data && result.data.duplicate)) item.productId = result.data.id;
+            saveDraft();
+            const file = files.get(item.key);
+            if (file && !item.photo && item.productId) {
+                const uploaded = await app().uploadProductImage(item.productId, file);
+                if (uploaded.data && uploaded.data.image_url) {
+                    item.photo = uploaded.data.image_url;
+                    saveDraft();
+                }
+            }
+        }
+        draft.productIds = draft.productDrafts.map(function (item) { return item.productId; }).filter(Boolean);
+        saveDraft();
+        message("主商品與所有口味都已經儲存好了");
         return true;
     }
 
@@ -535,6 +659,15 @@
         });
     }
 
+    // 一個商品、多個口味：預設只產生「一篇」文案，列出所有口味（不再一個口味一篇）。
+    function groupLineText() {
+        const group = state().groupBuys.find(function (item) { return item.id === draft.groupBuyId; });
+        return app().lineNoteGroup(products(), {
+            groupName: draft.groupMeta.name, productGroupId: draft.groupId,
+            deadline: group.endDate || "", notes: group.notes || ""
+        });
+    }
+
     function allLinePosted() {
         return draft && draft.productIds.length > 0 && draft.productIds.every(function (id) {
             return draft.linePostedProductIds.includes(id);
@@ -542,6 +675,7 @@
     }
 
     function renderLineNote() {
+        if (draft.isGrouped) return renderGroupLineNote();
         const product = currentProduct();
         const checked = draft.linePostedProductIds.includes(product.id);
         element("wizard-step-content").innerHTML =
@@ -553,6 +687,22 @@
             '<ol class="wizard-simple-steps"><li>打開 LINE 群組</li><li>進入記事本</li><li>上傳商品圖片</li><li>貼上剛才的文案</li><li>按發布</li></ol>' +
             '<label class="wizard-confirm-check"><input type="checkbox" ' + (checked ? "checked" : "") + ' onchange="BeginnerWizard.markLinePosted(this.checked)"> 我已經貼到 LINE 記事本</label>' +
             (products().length > 1 ? '<p class="wizard-small-note">已完成 ' + draft.linePostedProductIds.length + "／" + draft.productIds.length + " 項商品</p>" : "");
+        updateFooter();
+        saveDraft();
+    }
+
+    // 一個商品、多個口味：同一主商品只產生一篇文案，所有口味都列在裡面（見 line-note.js generateGroupLineNote）。
+    function renderGroupLineNote() {
+        const checked = allLinePosted();
+        const list = products();
+        const firstPhoto = (list[0] || {}).photo;
+        element("wizard-step-content").innerHTML =
+            '<div class="wizard-step-copy"><span>第四步</span><h2>把商品介紹貼到 LINE</h2><p>這個商品有不同口味，系統已經把所有口味合併成一篇文案。</p></div>' +
+            (firstPhoto ? '<img class="wizard-feature-image" src="' + escapeHtml(firstPhoto) + '" alt="' + escapeHtml(draft.groupMeta.name) + '">' : "") +
+            '<textarea class="form-control wizard-note-preview" id="wizard-note-text" rows="18" readonly>' + escapeHtml(groupLineText()) + '</textarea>' +
+            '<button type="button" class="btn btn-primary btn-lg wizard-full-button" onclick="BeginnerWizard.copyLineNote()"><i class="fa-solid fa-copy"></i> 複製 LINE 文案</button>' +
+            '<ol class="wizard-simple-steps"><li>打開 LINE 群組</li><li>進入記事本</li><li>上傳商品圖片</li><li>貼上剛才的文案</li><li>按發布</li></ol>' +
+            '<label class="wizard-confirm-check"><input type="checkbox" ' + (checked ? "checked" : "") + ' onchange="BeginnerWizard.markLinePosted(this.checked)"> 我已經貼到 LINE 記事本</label>';
         updateFooter();
         saveDraft();
     }
@@ -573,12 +723,19 @@
             root.document.execCommand("copy");
         }
         const product = currentProduct();
-        if (!draft.copiedProductIds.includes(product.id)) draft.copiedProductIds.push(product.id);
+        if (product && !draft.copiedProductIds.includes(product.id)) draft.copiedProductIds.push(product.id);
         saveDraft();
         message("文案已複製，現在可以到 LINE 群組記事本貼上。");
     }
 
+    // 一個商品、多個口味的合併文案只有「一個」勾選框，勾選／取消時視為所有口味一起標記完成／未完成。
     function markLinePosted(checked) {
+        if (draft.isGrouped) {
+            draft.linePostedProductIds = checked ? draft.productIds.slice() : [];
+            saveDraft();
+            renderLineNote();
+            return;
+        }
         const product = currentProduct();
         draft.linePostedProductIds = draft.linePostedProductIds.filter(function (id) { return id !== product.id; });
         if (checked) draft.linePostedProductIds.push(product.id);
@@ -609,12 +766,14 @@
     }
 
     function renderPublish() {
+        if (draft.isGrouped && !draft.publishSeparately) return renderGroupPublish();
         const product = currentProduct();
         const group = state().groupBuys.find(function (item) { return item.id === draft.groupBuyId; });
         const price = Number(product.pickupPrice == null ? product.price : product.pickupPrice);
         const published = draft.publishedProductIds.includes(product.id);
         element("wizard-step-content").innerHTML =
             '<div class="wizard-step-copy"><span>第五步</span><h2>發布訂購按鈕</h2><p>選擇 LINE 群組後，把商品訂購卡發布出去。</p></div>' +
+            (draft.isGrouped ? '<p class="wizard-small-note"><button type="button" class="wizard-text-button" onclick="BeginnerWizard.toggleGroupPublishMode()">改回發布一張合併商品卡</button></p>' : "") +
             (products().length > 1 ? '<div class="wizard-form-group"><label>選擇商品</label>' + selector("wizard-publish-product", "BeginnerWizard.changeProduct(this.value)") + '</div>' : "") +
             '<div class="wizard-card-preview">' + (product.photo ? '<img src="' + escapeHtml(product.photo) + '" alt="' + escapeHtml(product.name) + '">' : "") +
             '<div><h4>' + escapeHtml(product.name) + '</h4><p>' + escapeHtml(product.specs || "無規格") + '</p><strong>NT$ ' +
@@ -627,9 +786,65 @@
         loadGroups();
     }
 
+    // 一個商品、多個口味：預設只發布「一張」合併商品卡（客戶點卡後在 LIFF 選口味），
+    // 這裡是唯一預設路徑；「分開發布每個口味」是管理者主動切換才會用到的既有單一商品流程。
+    function renderGroupPublish() {
+        const group = state().groupBuys.find(function (item) { return item.id === draft.groupBuyId; });
+        const list = products();
+        const firstPhoto = (list[0] || {}).photo;
+        const published = draft.publishedProductIds.length > 0 && draft.productIds.every(function (id) { return draft.publishedProductIds.includes(id); });
+        element("wizard-step-content").innerHTML =
+            '<div class="wizard-step-copy"><span>第五步</span><h2>發布訂購按鈕</h2><p>客戶會看到一張商品卡，點進去再選口味與數量。</p></div>' +
+            '<div class="wizard-card-preview">' + (firstPhoto ? '<img src="' + escapeHtml(firstPhoto) + '" alt="' + escapeHtml(draft.groupMeta.name) + '">' : "") +
+            '<div><h4>' + escapeHtml(draft.groupMeta.name) + '</h4><p>共有 ' + list.length + ' 種口味／款式</p><p>截止日期：' + escapeHtml(group.endDate) + '</p></div></div>' +
+            '<div class="wizard-form-group"><label>選擇 LINE 群組</label><select class="form-control" id="wizard-line-group" onchange="BeginnerWizard.selectLineGroup(this.value)"><option value="">正在讀取 LINE 群組…</option></select><small class="wizard-field-error" data-error="lineGroup" hidden></small></div>' +
+            '<button type="button" class="btn btn-primary btn-lg wizard-full-button" onclick="BeginnerWizard.publishGroupCard()"><i class="fa-brands fa-line"></i> ' +
+            (published ? "再次發布合併商品卡" : "發布合併商品卡") + '</button>' +
+            '<p class="wizard-small-note">' + (published ? "✓ 合併商品卡已發布" : "尚未發布") + '</p>' +
+            '<p class="wizard-small-note"><button type="button" class="wizard-text-button" onclick="BeginnerWizard.toggleGroupPublishMode()">改成分開發布每個口味</button></p>';
+        loadGroups();
+    }
+
+    function toggleGroupPublishMode() {
+        draft.publishSeparately = !draft.publishSeparately;
+        saveDraft();
+        renderPublish();
+    }
+
     function selectLineGroup(value) {
         draft.selectedLineGroupId = value;
         saveDraft();
+    }
+
+    async function publishGroupCard() {
+        if (busy) return;
+        const groupId = element("wizard-line-group").value || draft.selectedLineGroupId;
+        if (!groupId) {
+            message("LINE 群組尚未連線，請先到設定頁完成連線。", "error");
+            return;
+        }
+        const repeated = draft.publishedProductIds.length > 0;
+        const prompt = repeated
+            ? "合併商品卡已經發布過，確定要再次發布嗎？"
+            : "即將把合併商品卡發布到 LINE 群組，確定要發布嗎？";
+        if (!root.confirm(prompt)) return;
+        busy = true;
+        updateFooter();
+        try {
+            const result = await app().publishGroupCard(draft.groupBuyId, draft.groupId, groupId);
+            if (result.error || result.skipped) throw new Error(friendlyError(result, "發布失敗，請稍後再試一次"));
+            draft.publishedProductIds = draft.productIds.slice();
+            if (result.data && result.data.publication_id) draft.publicationIds[draft.groupId] = result.data.publication_id;
+            draft.selectedLineGroupId = groupId;
+            saveDraft();
+            message("合併商品卡已發布，客戶現在可以點卡選口味與數量。");
+            renderPublish();
+        } catch (error) {
+            message(error.message || "發布失敗，請稍後再試一次", "error");
+        } finally {
+            busy = false;
+            updateFooter();
+        }
     }
 
     async function publishCard() {
@@ -773,12 +988,15 @@
         previous: previous,
         previewImage: previewImage,
         publishCard: publishCard,
+        publishGroupCard: publishGroupCard,
         removeFlavor: removeFlavor,
         resume: resume,
         returnToStep: returnToStep,
         selectLineGroup: selectLineGroup,
+        setGrouped: setGrouped,
         showSummary: showSummary,
         startFresh: startFresh,
+        toggleGroupPublishMode: toggleGroupPublishMode,
         toggleUnlimited: toggleUnlimited,
         updateStockPreview: updateStockPreview,
         validateGroupDraft: validateGroupDraft,

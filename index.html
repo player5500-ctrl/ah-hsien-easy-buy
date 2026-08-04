@@ -572,7 +572,7 @@
                         <div class="button-group">
                             <button class="btn btn-secondary" onclick="syncAllProductsToCloud()" title="把所有商品同步到雲端（LINE 收單解析用）"><i class="fa-solid fa-cloud-arrow-up"></i> 全部同步雲端</button>
                             <button class="btn btn-secondary" onclick="openLineNoteModal()" title="產生 LINE 群組記事本文案"><i class="fa-solid fa-clipboard-list"></i> 產生記事本文案</button>
-                            <button class="btn btn-primary" onclick="openProductModal()"><i class="fa-solid fa-plus"></i> 新增商品</button>
+                            <button class="btn btn-primary" onclick="openAddProductChoice()"><i class="fa-solid fa-plus"></i> 新增商品</button>
                         </div>
                     </div>
 
@@ -950,6 +950,134 @@
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeProductModal()">取消</button>
                 <button class="btn btn-primary" onclick="saveProduct()">儲存商品</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增商品：先選擇「單一商品」或「有不同口味／款式」 -->
+    <div class="modal-backdrop" id="product-add-choice-modal">
+        <div class="modal-container" style="max-width:480px;">
+            <div class="modal-header">
+                <h3 class="modal-title">這個商品有不同口味／款式嗎？</h3>
+                <button class="modal-close" onclick="closeAddProductChoice()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted" style="margin-bottom:16px;">例如「德國 Pril 洗碗精」有檨檬、蘆薈兩種口味，客戶只會看到一個商品卡，選擇口味後再下單；系統內部仍會各自獨立管理價格、庫存與訂單。</p>
+                <div style="display:flex; flex-direction:column; gap:12px;">
+                    <button class="btn btn-secondary" style="justify-content:flex-start; text-align:left; padding:16px;" onclick="chooseSingleProduct()">
+                        <strong>沒有，是單一商品</strong><br><small class="text-muted">維持原本新增商品的流程</small>
+                    </button>
+                    <button class="btn btn-primary" style="justify-content:flex-start; text-align:left; padding:16px;" onclick="chooseMultiVariantProduct()">
+                        <strong>有，有不同口味／款式</strong><br><small>建立一個主商品，底下新增多個口味／款式</small>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增多口味／款式主商品 Modal -->
+    <div class="modal-backdrop" id="product-group-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="product-group-modal-title">新增多口味／款式主商品</h3>
+                <button class="modal-close" onclick="closeProductGroupModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label class="form-label required" for="pg-name">主商品名稱</label>
+                    <input type="text" class="form-control" id="pg-name" placeholder="例如：德國 Pril 洗碗精">
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label class="form-label" for="pg-desc">主商品說明 (選填)</label>
+                    <textarea class="form-control" id="pg-desc" rows="2" placeholder="所有口味共用的說明文字"></textarea>
+                </div>
+                <div class="form-grid" style="margin-bottom:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="pg-image">主商品圖片網址 (選填)</label>
+                        <input type="text" class="form-control" id="pg-image" placeholder="http://">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="pg-unit">單位</label>
+                        <input type="text" class="form-control" id="pg-unit" value="份" placeholder="例如：瓶、包、盒">
+                    </div>
+                </div>
+                <div style="display:flex; gap:24px; margin-bottom:16px;">
+                    <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="pg-same-price" checked onchange="toggleProductGroupSamePrice()"> 所有口味使用相同價格</label>
+                    <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="pg-same-image" onchange="toggleProductGroupSameImage()"> 所有口味使用同一張圖片</label>
+                </div>
+                <div id="pg-shared-price-row" class="form-grid" style="margin-bottom:16px;">
+                    <div class="form-group"><label class="form-label required">共用售價 (元)</label><input type="number" class="form-control" id="pg-shared-price" min="0" placeholder="例如：210"></div>
+                    <div class="form-group"><label class="form-label">共用自取價 (選填)</label><input type="number" class="form-control" id="pg-shared-pickup-price" min="0"></div>
+                    <div class="form-group"><label class="form-label">共用外送價 (選填)</label><input type="number" class="form-control" id="pg-shared-delivery-price" min="0"></div>
+                </div>
+                <h4 style="margin:20px 0 10px;">口味／款式清單</h4>
+                <div id="pg-variant-list"></div>
+                <button type="button" class="btn btn-secondary" onclick="addProductGroupVariant()"><i class="fa-solid fa-plus"></i> 再新增一個口味／款式</button>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeProductGroupModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveProductGroup()">建立主商品</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 新增／編輯單一口味 Modal -->
+    <div class="modal-backdrop" id="variant-modal">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title" id="variant-modal-title">新增口味／款式</h3>
+                <button class="modal-close" onclick="closeVariantModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid" style="margin-bottom:16px;">
+                    <div class="form-group">
+                        <label class="form-label required" for="variant-name">口味／款式名稱</label>
+                        <input type="text" class="form-control" id="variant-name" placeholder="例如：檨檬">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="variant-specs">規格 (選填)</label>
+                        <input type="text" class="form-control" id="variant-specs" placeholder="例如：653ml x 3瓶">
+                    </div>
+                </div>
+                <div class="form-grid" style="margin-bottom:16px;">
+                    <div class="form-group">
+                        <label class="form-label required" for="variant-price">售價 (元)</label>
+                        <input type="number" class="form-control" id="variant-price" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="variant-unit">單位</label>
+                        <input type="text" class="form-control" id="variant-unit" placeholder="例如：瓶、包、盒">
+                    </div>
+                </div>
+                <div class="form-grid" style="margin-bottom:16px;">
+                    <div class="form-group">
+                        <label class="form-label" for="variant-pickup-price">自取價 (元，選填)</label>
+                        <input type="number" class="form-control" id="variant-pickup-price" min="0" placeholder="留空＝同售價">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" for="variant-delivery-price">外送價 (元，選填)</label>
+                        <input type="number" class="form-control" id="variant-delivery-price" min="0" placeholder="留空＝同售價">
+                    </div>
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label class="form-label" for="variant-enabled">啟用狀態</label>
+                    <select class="form-control" id="variant-enabled">
+                        <option value="true">啟用中</option>
+                        <option value="false">已停用</option>
+                    </select>
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label class="form-label" for="variant-desc">口味說明 (選填)</label>
+                    <textarea class="form-control" id="variant-desc" rows="2"></textarea>
+                </div>
+                <div class="form-group" style="margin-bottom:16px;">
+                    <label class="form-label" for="variant-photo">此口味照片網址 (選填，留空則沿用主商品圖片)</label>
+                    <input type="text" class="form-control" id="variant-photo" placeholder="http://">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeVariantModal()">取消</button>
+                <button class="btn btn-primary" onclick="saveVariant()">儲存口味</button>
             </div>
         </div>
     </div>

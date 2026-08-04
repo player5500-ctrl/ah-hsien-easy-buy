@@ -32,6 +32,8 @@ function publicStock(row) {
         productName: row.product_name || row.name || "",
         specs: row.specs || "",
         unit: row.unit || "份",
+        variantName: row.variant_name || null,
+        productGroupId: row.product_group_id || null,
         stockEnabled: Boolean(row.stock_enabled),
         incomingQuantity: Number(row.incoming_quantity || 0),
         reservedQuantity: Number(row.reserved_quantity || 0),
@@ -48,7 +50,8 @@ function publicStock(row) {
 }
 
 function stockSelectSql(extraWhere = "") {
-    return `SELECT gbp.*, p.line_code, p.name AS product_name, p.specs, p.unit
+    return `SELECT gbp.*, p.line_code, p.name AS product_name, p.specs, p.unit,
+            p.variant_name, p.product_group_id
         FROM group_buy_products gbp
         JOIN products p ON p.id = gbp.product_id
         ${extraWhere}`;
@@ -117,14 +120,18 @@ function updateStockStatement(env, groupBuyId, productId, delta) {
         .bind(delta, delta, delta, delta, groupBuyId, productId);
 }
 
-function itemStatement(env, orderId, change) {
+// stock（getStock/stockSelectSql 的 JOIN 結果）帶有下單當下的商品名稱／口味名稱／規格，
+// 只在「第一次建立這筆明細」時寫入 *_snapshot；之後改數量／改口味只更新既有明細，
+// 不會覆寫 snapshot，避免未來商品或口味改名後舊訂單內容跟著改變（見需求文件第十節）。
+function itemStatement(env, orderId, change, stock) {
     if (change.quantity === 0) {
         return env.DB.prepare("DELETE FROM order_items WHERE order_id = ? AND product_id = ?")
             .bind(orderId, change.productId);
     }
     return env.DB.prepare(`INSERT INTO order_items
-        (order_id, product_code, product_id, quantity, unit_price, amount, item_status, updated_at)
-        VALUES (?, ?, ?, ?, ?, ? * ?, 'active', CURRENT_TIMESTAMP)
+        (order_id, product_code, product_id, quantity, unit_price, amount, item_status, updated_at,
+         product_name_snapshot, variant_name_snapshot, specs_snapshot)
+        VALUES (?, ?, ?, ?, ?, ? * ?, 'active', CURRENT_TIMESTAMP, ?, ?, ?)
         ON CONFLICT(order_id, product_id) DO UPDATE SET
             quantity = excluded.quantity,
             product_code = excluded.product_code,
@@ -139,7 +146,10 @@ function itemStatement(env, orderId, change) {
             change.quantity,
             change.unitPrice,
             change.unitPrice,
-            change.quantity
+            change.quantity,
+            stock?.product_name || null,
+            stock?.variant_name || null,
+            stock?.specs || null
         );
 }
 
@@ -243,7 +253,7 @@ async function prepareOrderMutation(env, options) {
         deltas.push({ change, stock, before, delta });
         prepared.push(guardStatement(env, guardId, orderId, groupBuyId, change.productId, before, delta));
         if (delta !== 0) prepared.push(updateStockStatement(env, groupBuyId, change.productId, delta));
-        prepared.push(itemStatement(env, orderId, change));
+        prepared.push(itemStatement(env, orderId, change, stock));
         if (delta !== 0) {
             const movement = movementType(sourceType, before, change.quantity, existingOrder?.status === "已取消");
             prepared.push(inventoryMovementStatement(env, {

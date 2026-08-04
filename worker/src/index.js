@@ -6,6 +6,8 @@ const Inventory = require("./inventory.js");
 const CustomerName = require("../../customer-name.js");
 const CustomerPasteParse = require("../../customer-paste-parse.js");
 const CustomerAccounts = require("./customer-accounts.js");
+const ProductShared = require("./product-shared.js");
+const ProductGroups = require("./product-groups.js");
 
 const ADMIN_ORIGIN = "https://player5500-ctrl.github.io";
 
@@ -114,50 +116,10 @@ function createDependencies(env) {
     };
 }
 
-function normalizeLineCode(value) {
-    const code = String(value || "").normalize("NFKC").toUpperCase().trim();
-    return /^[A-Z][A-Z0-9_-]*$/.test(code) ? code : "";
-}
-
-function validateProductPayload(payload) {
-    const name = String(payload.name || "").trim();
-    if (!name) return { error: "商品名稱必填" };
-    const rawCode = payload.line_code == null ? "" : String(payload.line_code).trim();
-    const lineCode = rawCode ? normalizeLineCode(rawCode) : null;
-    if (rawCode && !lineCode) return { error: "商品代碼格式錯誤，需以英文字母開頭，例如 A001" };
-    const price = Number(payload.price ?? 0);
-    if (!Number.isInteger(price) || price < 0) return { error: "價格必須是 0 以上的整數" };
-    // 雙價：自取價／外送價為選填，缺值存 null（下單時回退 legacy price，見 liff.js effectivePrice）。
-    const parseOptionalPrice = (value, label) => {
-        if (value == null || value === "") return { value: null };
-        const num = Number(value);
-        if (!Number.isInteger(num) || num < 0) return { error: `${label}必須是 0 以上的整數` };
-        return { value: num };
-    };
-    const pickup = parseOptionalPrice(payload.pickup_price, "自取價");
-    if (pickup.error) return { error: pickup.error };
-    const delivery = parseOptionalPrice(payload.delivery_price, "外送價");
-    if (delivery.error) return { error: delivery.error };
-    return {
-        name,
-        lineCode,
-        price,
-        pickupPrice: pickup.value,
-        deliveryPrice: delivery.value,
-        specs: String(payload.specs || "").trim() || null,
-        unit: String(payload.unit || "").trim() || "份",
-        description: String(payload.description || "").trim() || null,
-        imageUrl: String(payload.image_url || "").trim() || null,
-        enabled: payload.enabled === undefined ? 1 : (payload.enabled ? 1 : 0)
-    };
-}
+const { normalizeLineCode, validateProductPayload, isUniqueViolation } = ProductShared;
 
 async function readJson(request) {
     try { return await request.json(); } catch (_error) { return null; }
-}
-
-function isUniqueViolation(error) {
-    return /UNIQUE constraint failed/i.test(error?.message || "");
 }
 
 const IMAGE_CONTENT_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
@@ -253,6 +215,64 @@ async function handleProductRoutes(request, env, url) {
         ]);
         if (!results[1].meta.changes) return json({ error: "找不到商品" }, 404);
         return json({ id, deleted: true });
+    }
+    return null;
+}
+
+// 「一個商品、多個口味／款式」：主商品（product_groups）＋口味（products，各自獨立價格／庫存／訂單）。
+// 商品編號一律伺服器產生，不接受前端指定；細節見 product-groups.js 開頭註解。
+async function handleProductGroupRoutes(request, env, url) {
+    if (request.method === "GET" && url.pathname === "/api/product-groups") {
+        return json(await ProductGroups.listProductGroups(env));
+    }
+    if (request.method === "POST" && url.pathname === "/api/product-groups") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.createProductGroupWithVariants(env, payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data, result.data?.created ? 201 : 200);
+    }
+    if (request.method === "POST" && url.pathname === "/api/product-groups/merge-existing/preview") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.previewMerge(env, payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data);
+    }
+    if (request.method === "POST" && url.pathname === "/api/product-groups/merge-existing") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.applyMerge(env, payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data);
+    }
+    const variantMatch = url.pathname.match(/^\/api\/product-groups\/([^/]+)\/variants\/([^/]+)$/);
+    if (variantMatch && request.method === "PUT") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.updateVariant(env, decodeURIComponent(variantMatch[1]), decodeURIComponent(variantMatch[2]), payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data);
+    }
+    const addVariantMatch = url.pathname.match(/^\/api\/product-groups\/([^/]+)\/variants$/);
+    if (addVariantMatch && request.method === "POST") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.addVariantToGroup(env, decodeURIComponent(addVariantMatch[1]), payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data, result.data?.created ? 201 : 200);
+    }
+    const idMatch = url.pathname.match(/^\/api\/product-groups\/([^/]+)$/);
+    if (!idMatch) return null;
+    const groupId = decodeURIComponent(idMatch[1]);
+    if (request.method === "GET") {
+        const group = await ProductGroups.getProductGroup(env, groupId);
+        return group ? json(group) : json({ error: "找不到主商品" }, 404);
+    }
+    if (request.method === "PUT") {
+        const payload = await readJson(request);
+        if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
+        const result = await ProductGroups.updateProductGroup(env, groupId, payload);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data);
+    }
+    if (request.method === "DELETE") {
+        const result = await ProductGroups.deleteProductGroup(env, groupId);
+        return result.error ? json({ error: result.error }, result.status) : json(result.data);
     }
     return null;
 }
@@ -738,8 +758,43 @@ async function getFlexContext(env, payload) {
     return { groupId, row, flex };
 }
 
+// 一個商品、多個口味：預設合併成一張主商品卡（見需求文件第八節）。管理者仍可選擇
+// 「分開發布每個口味」，做法就是照原本 getFlexContext 對每個口味各呼叫一次，不需要另外的程式路徑。
+async function getGroupFlexContext(env, payload) {
+    const groupId = String(payload?.group_id || env.LINE_DEFAULT_GROUP_ID || "").trim();
+    const groupBuyId = String(payload?.group_buy_id || "").trim();
+    const productGroupId = String(payload?.product_group_id || "").trim();
+    if (!groupId || !groupBuyId || !productGroupId) return { error: "LINE 群組、團購與主商品皆為必填", status: 400 };
+    const groupBuy = await env.DB.prepare("SELECT id, name, ends_at, status FROM group_buys WHERE id = ? LIMIT 1").bind(groupBuyId).first();
+    if (!groupBuy) return { error: "找不到團購，請先同步團購", status: 404 };
+    if (groupBuy.status !== "open" || Date.now() > new Date(groupBuy.ends_at).getTime()) return { error: "團購已截止，無法發布商品卡", status: 409 };
+    const productGroup = await env.DB.prepare("SELECT id, name, description, image_url FROM product_groups WHERE id = ? AND enabled = 1")
+        .bind(productGroupId).first();
+    if (!productGroup) return { error: "找不到主商品，或主商品已停用", status: 404 };
+    const variants = (await env.DB.prepare(`SELECT p.id, p.name, p.variant_name, p.price, p.pickup_price, p.delivery_price
+        FROM products p JOIN group_buy_products gbp ON gbp.product_id = p.id AND gbp.group_buy_id = ? AND gbp.enabled = 1
+        WHERE p.product_group_id = ? AND p.enabled = 1 ORDER BY p.variant_sort, p.id`).bind(groupBuyId, productGroupId).all()).results;
+    if (!variants.length) return { error: "此主商品目前沒有可發布的口味，請先加入團購並啟用庫存", status: 409 };
+    if (!env.LIFF_ID) return { error: "尚未設定 LIFF_ID，無法發布合併商品卡；請先設定 LIFF_ID，或改用「分開發布每個口味」", status: 503 };
+    const flex = LineFlex.buildGroupFlexMessage({
+        groupBuy: { id: groupBuy.id, name: groupBuy.name, ends_at: groupBuy.ends_at },
+        productGroup,
+        variants,
+        showImage: payload.show_image !== false,
+        liffId: env.LIFF_ID || null
+    });
+    // line_flex_publications.product_id 沿用既有欄位記錄「這次發布的是什麼」；
+    // 主商品群組的 id 一律是 PG 開頭，跟口味的 P 開頭 id 不會混淆。
+    return { groupId, row: { group_buy_id: groupBuy.id, product_id: productGroup.id }, flex };
+}
+
+async function resolveFlexContext(env, payload) {
+    if (String(payload?.product_group_id || "").trim()) return getGroupFlexContext(env, payload);
+    return getFlexContext(env, payload);
+}
+
 async function publishFlexMessage(env, payload) {
-    const context = await getFlexContext(env, payload);
+    const context = await resolveFlexContext(env, payload);
     if (context.error) return context;
     const publicationId = crypto.randomUUID();
     const publishedBy = String(payload?.published_by || "後台管理員").trim().slice(0, 100) || "後台管理員";
@@ -1325,6 +1380,10 @@ async function routeRequest(request, env, context) {
         const handled = await handleProductRoutes(request, env, url);
         if (handled) return handled;
     }
+    if (url.pathname.startsWith("/api/product-groups")) {
+        const handled = await handleProductGroupRoutes(request, env, url);
+        if (handled) return handled;
+    }
     if (url.pathname.startsWith("/api/customers")) {
         const handled = await handleCustomerRoutes(request, env, url);
         if (handled) return handled;
@@ -1355,7 +1414,7 @@ async function routeRequest(request, env, context) {
     if (request.method === "POST" && url.pathname === "/api/line/flex-preview") {
         const payload = await readJson(request);
         if (!payload) return json({ error: "JSON 格式錯誤" }, 400);
-        const result = await getFlexContext(env, payload);
+        const result = await resolveFlexContext(env, payload);
         return result.error ? json({ error: result.error }, result.status) : json({ flex_message: result.flex });
     }
     if (request.method === "POST" && url.pathname === "/api/line/publish") {
@@ -1514,5 +1573,6 @@ module.exports = {
     validateProductPayload, handleProductRoutes, validateCustomerPayload, handleCustomerRoutes,
     validateBulkImportItem, handleCustomerBulkImport,
     processPostback, reserveWebhookEvent, validateGroupBuyPayload,
-    upsertGroupBuy, getFlexContext, publishFlexMessage, stableId
+    upsertGroupBuy, getFlexContext, getGroupFlexContext, resolveFlexContext, publishFlexMessage, stableId,
+    handleProductGroupRoutes
 };

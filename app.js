@@ -39,6 +39,7 @@ function orderCustomerNameForSort(order) {
 let state = {
     groupBuys: [],
     products: [],
+    productGroups: [], // 一個商品、多個口味／款式的「主商品」清單；口味本身仍是 state.products 的獨立商品
     customers: [],
     orders: [],
     lineInbox: [],
@@ -282,6 +283,7 @@ window.addEventListener('beforeunload', () => stopProductVoiceRecognition('已�
 function initDatabase() {
     const localGB = localStorage.getItem("easygo_groupbuys");
     const localProd = localStorage.getItem("easygo_products");
+    const localGroups = localStorage.getItem("easygo_product_groups");
     const localCust = localStorage.getItem("easygo_customers");
     const localOrd = localStorage.getItem("easygo_orders");
     const localActiveId = localStorage.getItem("easygo_active_gb_id");
@@ -289,6 +291,7 @@ function initDatabase() {
     if (localGB && localProd && localCust && localOrd) {
         state.groupBuys = JSON.parse(localGB);
         state.products = JSON.parse(localProd);
+        state.productGroups = localGroups ? JSON.parse(localGroups) : []; // 舊資料沒有這個 key，視為沒有任何多口味主商品
         state.customers = JSON.parse(localCust);
         state.orders = JSON.parse(localOrd);
         state.activeGroupBuyId = localActiveId || (state.groupBuys[0] ? state.groupBuys[0].id : "");
@@ -297,6 +300,7 @@ function initDatabase() {
         // 全新環境：以空資料啟動（不再載入範例資料）
         state.groupBuys = [];
         state.products = [];
+        state.productGroups = [];
         state.customers = [];
         state.orders = [];
         state.activeGroupBuyId = "";
@@ -347,6 +351,7 @@ function purgeDemoData() {
 function saveStateToStorage() {
     localStorage.setItem("easygo_groupbuys", JSON.stringify(state.groupBuys));
     localStorage.setItem("easygo_products", JSON.stringify(state.products));
+    localStorage.setItem("easygo_product_groups", JSON.stringify(state.productGroups || []));
     localStorage.setItem("easygo_customers", JSON.stringify(state.customers));
     localStorage.setItem("easygo_orders", JSON.stringify(state.orders));
     localStorage.setItem("easygo_active_gb_id", state.activeGroupBuyId);
@@ -696,24 +701,42 @@ function renderGroupBuyProductChecklist(selectedIds = [], groupBuyId = '') {
         return;
     }
     const selected = new Set(selectedIds);
-    const rows = [...state.products]
-        .sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))
-        .map(p => {
-            const stock = stockFor(groupBuyId, p.id) || {
-                stockEnabled: false,
-                incomingQuantity: 0,
-                reservedQuantity: 0,
-                sellableQuantity: 0,
-                soldQuantity: 0,
-                remainingQuantity: 0,
-                lowStockThreshold: 5,
-                stockStatus: 'in_stock'
-            };
-            const checked = selected.has(p.id);
-            return `<tr class="gb-stock-row" data-product-id="${escapeHtml(p.id)}">
+    // 排序：同一主商品的口味排在一起（依 productGroupId 分群、群內依 variantSort），
+    // 沒有 productGroupId 的舊商品維持原本依商品編號排序的平鋪顯示。
+    const sorted = [...state.products].sort((a, b) => {
+        const keyA = a.productGroupId || a.id;
+        const keyB = b.productGroupId || b.id;
+        if (keyA !== keyB) return keyA.localeCompare(keyB, undefined, { numeric: true });
+        return (a.variantSort || 0) - (b.variantSort || 0);
+    });
+    const renderedGroupHeaders = new Set();
+    const rows = sorted.map(p => {
+        let headerRow = '';
+        if (p.productGroupId && !renderedGroupHeaders.has(p.productGroupId)) {
+            renderedGroupHeaders.add(p.productGroupId);
+            const group = state.productGroups.find(g => g.id === p.productGroupId);
+            const variantCount = state.products.filter(x => x.productGroupId === p.productGroupId).length;
+            headerRow = `<tr style="background:var(--bg-warm-gray);"><td colspan="11" style="font-weight:700;">
+                <i class="fa-solid fa-layer-group"></i> ${escapeHtml(group ? group.name : p.productGroupId)}
+                <small class="text-muted">（主商品，共 ${variantCount} 種口味／款式，以下各口味庫存互相獨立）</small>
+            </td></tr>`;
+        }
+        const stock = stockFor(groupBuyId, p.id) || {
+            stockEnabled: false,
+            incomingQuantity: 0,
+            reservedQuantity: 0,
+            sellableQuantity: 0,
+            soldQuantity: 0,
+            remainingQuantity: 0,
+            lowStockThreshold: 5,
+            stockStatus: 'in_stock'
+        };
+        const checked = selected.has(p.id);
+        const displayName = p.productGroupId ? `↳ ${p.variantName || p.name}` : p.name;
+        return `${headerRow}<tr class="gb-stock-row" data-product-id="${escapeHtml(p.id)}">
                 <td><input type="checkbox" class="gb-product-checkbox" value="${escapeHtml(p.id)}"
                     ${checked ? 'checked' : ''} onchange="toggleGroupBuyStockRow('${escapeHtml(p.id)}')"></td>
-                <td><strong>${escapeHtml(p.id)}</strong><br><small>${escapeHtml(p.name)}${p.enabled ? '' : '（已停用）'}</small></td>
+                <td><strong>${escapeHtml(p.id)}</strong><br><small>${escapeHtml(displayName)}${p.enabled ? '' : '（已停用）'}</small></td>
                 <td><input type="checkbox" class="gb-stock-enabled" ${stock.stockEnabled ? 'checked' : ''}
                     ${checked ? '' : 'disabled'} onchange="updateGroupBuyStockPreview('${escapeHtml(p.id)}')"></td>
                 <td><input type="number" class="form-control gb-stock-incoming" min="0" value="${stock.incomingQuantity}"
@@ -730,7 +753,7 @@ function renderGroupBuyProductChecklist(selectedIds = [], groupBuyId = '') {
                     ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openStockAdjustModal('${escapeHtml(groupBuyId)}','${escapeHtml(p.id)}')">調整庫存</button>`
                     : '-'}</td>
             </tr>`;
-        }).join('');
+    }).join('');
     container.innerHTML = `<div class="table-responsive"><table class="table-custom stock-config-table">
         <thead><tr><th>加入</th><th>商品</th><th>限量</th><th>進貨</th><th>保留</th><th>可賣</th><th>已售</th><th>剩餘</th><th>低庫存</th><th>狀態</th><th>調整</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
@@ -1207,17 +1230,114 @@ let productFilters = {
     sort: "id-asc"
 };
 
+// 一個商品、多個口味：記住哪些主商品目前是展開狀態（預設收合，避免列表過長）
+let expandedProductGroups = new Set();
+
+function toggleProductGroupExpand(groupId) {
+    if (expandedProductGroups.has(groupId)) expandedProductGroups.delete(groupId);
+    else expandedProductGroups.add(groupId);
+    renderProducts();
+}
+
+// 搜尋比對：主商品名稱、口味名稱、商品代碼、規格皆須命中（不只是商品自身 id/name）
+function productMatchesSearch(p, group, s) {
+    const haystacks = [p.id, p.name, p.specs || '', p.variantName || ''];
+    if (group) haystacks.push(group.name, group.description || '');
+    return haystacks.some(v => String(v || '').toLowerCase().includes(s));
+}
+
+function productGroupStatusLabel(group, variants) {
+    if (!group.enabled) return { text: '已停用', cls: 'badge-unpaid' };
+    const active = variants.filter(p => p.enabled);
+    if (!active.length) return { text: '已停用', cls: 'badge-unpaid' };
+    const stocks = active.map(p => stockFor(state.activeGroupBuyId, p.id));
+    const soldOut = stocks.filter(stock => stock && stock.stockEnabled && stock.remainingQuantity <= 0);
+    if (soldOut.length && soldOut.length === active.length) return { text: '全部售完', cls: 'badge-unpaid' };
+    if (soldOut.length) return { text: '部分口味售完', cls: 'badge-pending' };
+    return { text: '開放訂購', cls: 'badge-paid' };
+}
+
+function renderProductRow(p, options = {}) {
+    const isUsed = state.orders.some(o => o.items.some(it => it.productId === p.id));
+    const stock = stockFor(state.activeGroupBuyId, p.id);
+    const statusBadge = p.enabled
+        ? `<span class="badge badge-paid">啟用中</span>`
+        : `<span class="badge badge-unpaid">已停用</span>`;
+    const indent = options.indent ? 'padding-left:32px;' : '';
+    const displayName = options.indent ? (p.variantName || p.name) : p.name;
+    const editFn = p.productGroupId ? `openVariantModal('${p.productGroupId}','${p.id}')` : `openProductModal('${p.id}')`;
+
+    return `
+        <tr>
+            <td style="font-family: Outfit; font-weight: 700;">${escapeHtml(p.id)}</td>
+            <td><div style="width:40px; height:40px; border-radius:8px; background-color:var(--bg-warm-gray); display:flex; align-items:center; justify-content:center; color:var(--text-muted);"><i class="fa-solid fa-image"></i></div></td>
+            <td style="font-weight:700; ${indent}">${options.indent ? '↳ ' : ''}${escapeHtml(displayName)}</td>
+            <td>${escapeHtml(p.specs || '-')}</td>
+            <td style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price}</td>
+            <td>${escapeHtml(p.unit)}</td>
+            <td>${statusBadge}</td>
+            <td>${stock && stock.stockEnabled ? stock.sellableQuantity : '-'}</td>
+            <td>${stock && stock.stockEnabled ? stock.soldQuantity : '-'}</td>
+            <td>${stock && stock.stockEnabled ? stock.remainingQuantity : '-'}</td>
+            <td>${stockStatusBadge(stock)}</td>
+            <td>
+                <div class="button-group">
+                    <button class="btn btn-secondary btn-sm" onclick="${editFn}"><i class="fa-solid fa-edit"></i> 編輯</button>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleProductStatus('${p.id}')">${p.enabled ? '停用' : '啟用'}</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteProduct('${p.id}')" ${isUsed ? 'disabled title="已有訂單記錄，無法刪除，請選擇停用"' : ''}><i class="fa-solid fa-trash"></i> 刪除</button>
+                </div>
+            </td>
+        </tr>
+    `;
+}
+
+function renderProductMobileCard(p, options = {}) {
+    const isUsed = state.orders.some(o => o.items.some(it => it.productId === p.id));
+    const stock = stockFor(state.activeGroupBuyId, p.id);
+    const statusBadge = p.enabled
+        ? `<span class="badge badge-paid">啟用中</span>`
+        : `<span class="badge badge-unpaid">已停用</span>`;
+    const displayName = options.indent ? (p.variantName || p.name) : p.name;
+    const editFn = p.productGroupId ? `openVariantModal('${p.productGroupId}','${p.id}')` : `openProductModal('${p.id}')`;
+
+    return `
+        <div class="mobile-card" style="${options.indent ? 'margin-left:16px;' : ''}">
+            <div class="mobile-card-row">
+                <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(p.id)}</span> ${options.indent ? '↳ ' : ''}${escapeHtml(displayName)}</span>
+                <span>${statusBadge}</span>
+            </div>
+            <div class="mobile-card-divider"></div>
+            <div class="mobile-card-row">
+                <span style="color:var(--text-muted);">規格：${escapeHtml(p.specs || '-')}</span>
+                <span style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price} / ${escapeHtml(p.unit)}</span>
+            </div>
+            <div class="mobile-card-row">
+                <span>${stockStatusBadge(stock)}</span>
+                <span>${stock && stock.stockEnabled ? `可賣 ${stock.sellableQuantity}｜已售 ${stock.soldQuantity}｜剩餘 ${stock.remainingQuantity}` : '本團不限量'}</span>
+            </div>
+            <div class="mobile-card-actions">
+                <button class="btn btn-secondary btn-sm" onclick="${editFn}"><i class="fa-solid fa-edit"></i> 編輯</button>
+                <button class="btn btn-secondary btn-sm" onclick="toggleProductStatus('${p.id}')">${p.enabled ? '停用' : '啟用'}</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteProduct('${p.id}')" ${isUsed ? 'disabled' : ''}><i class="fa-solid fa-trash"></i> 刪除</button>
+            </div>
+        </div>
+    `;
+}
+
 function renderProducts() {
     const tbody = document.getElementById('products-tbody');
     const mobileList = document.getElementById('products-mobile-list');
     let html = "";
     let mobileHtml = "";
 
-    // 篩選與排序
+    // 篩選（比對主商品名稱、口味名稱、商品代碼、規格）
     let list = [...state.products];
     if (productFilters.search) {
         const s = productFilters.search.toLowerCase();
-        list = list.filter(p => p.id.toLowerCase().includes(s) || p.name.toLowerCase().includes(s));
+        list = list.filter(p => {
+            const group = p.productGroupId ? state.productGroups.find(g => g.id === p.productGroupId) : null;
+            return productMatchesSearch(p, group, s);
+        });
     }
 
     if (productFilters.sort === "id-asc") {
@@ -1228,59 +1348,74 @@ function renderProducts() {
         list.sort((a, b) => a.name.localeCompare(b.name, "zh-Hant-TW"));
     }
 
+    // 有主商品的口味收合成一個群組標題列；沒有 productGroupId 的舊商品維持原本平鋪顯示
+    const grouped = new Map(); // groupId -> variants[]
+    const ungrouped = [];
     list.forEach(p => {
-        const isUsed = state.orders.some(o => o.items.some(it => it.productId === p.id));
-        const stock = stockFor(state.activeGroupBuyId, p.id);
-        const statusBadge = p.enabled 
-            ? `<span class="badge badge-paid">啟用中</span>` 
-            : `<span class="badge badge-unpaid">已停用</span>`;
+        if (p.productGroupId) {
+            if (!grouped.has(p.productGroupId)) grouped.set(p.productGroupId, []);
+            grouped.get(p.productGroupId).push(p);
+        } else {
+            ungrouped.push(p);
+        }
+    });
+
+    const renderedGroupIds = new Set();
+    list.forEach(p => {
+        if (!p.productGroupId) return; // 群組標題只在第一次遇到該群組時輸出一次
+        if (renderedGroupIds.has(p.productGroupId)) return;
+        renderedGroupIds.add(p.productGroupId);
+        const group = state.productGroups.find(g => g.id === p.productGroupId) || { id: p.productGroupId, name: p.name, enabled: true };
+        const variants = (grouped.get(p.productGroupId) || []).sort((a, b) => (a.variantSort || 0) - (b.variantSort || 0));
+        const expanded = expandedProductGroups.has(group.id);
+        const status = productGroupStatusLabel(group, variants);
 
         html += `
-            <tr>
-                <td style="font-family: Outfit; font-weight: 700;">${escapeHtml(p.id)}</td>
-                <td><div style="width:40px; height:40px; border-radius:8px; background-color:var(--bg-warm-gray); display:flex; align-items:center; justify-content:center; color:var(--text-muted);"><i class="fa-solid fa-image"></i></div></td>
-                <td style="font-weight:700;">${escapeHtml(p.name)}</td>
-                <td>${escapeHtml(p.specs || '-')}</td>
-                <td style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price}</td>
-                <td>${escapeHtml(p.unit)}</td>
-                <td>${statusBadge}</td>
-                <td>${stock && stock.stockEnabled ? stock.sellableQuantity : '-'}</td>
-                <td>${stock && stock.stockEnabled ? stock.soldQuantity : '-'}</td>
-                <td>${stock && stock.stockEnabled ? stock.remainingQuantity : '-'}</td>
-                <td>${stockStatusBadge(stock)}</td>
+            <tr style="background:var(--bg-warm-gray);">
+                <td colspan="6" style="font-weight:700;">
+                    <button class="btn btn-secondary btn-sm" onclick="toggleProductGroupExpand('${group.id}')" style="margin-right:8px;">
+                        <i class="fa-solid fa-chevron-${expanded ? 'down' : 'right'}"></i> ${escapeHtml(group.name)}
+                    </button>
+                    <small class="text-muted">（主商品，共 ${variants.length} 種口味／款式）</small>
+                </td>
+                <td><span class="badge ${status.cls}">${status.text}</span></td>
+                <td colspan="4"></td>
                 <td>
                     <div class="button-group">
-                        <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
-                        <button class="btn btn-secondary btn-sm" onclick="toggleProductStatus('${p.id}')">${p.enabled ? '停用' : '啟用'}</button>
-                        <button class="btn btn-danger btn-sm" onclick="deleteProduct('${p.id}')" ${isUsed ? 'disabled title="已有訂單記錄，無法刪除，請選擇停用"' : ''}><i class="fa-solid fa-trash"></i> 刪除</button>
+                        <button class="btn btn-secondary btn-sm" onclick="toggleProductGroupExpand('${group.id}')">${expanded ? '收合口味' : '展開口味'}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="editProductGroupMeta('${group.id}')"><i class="fa-solid fa-edit"></i> 編輯主商品</button>
+                        <button class="btn btn-secondary btn-sm" onclick="openAddVariantModal('${group.id}')"><i class="fa-solid fa-plus"></i> 新增口味</button>
+                        <button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>
                     </div>
                 </td>
             </tr>
         `;
-
-        // 手機版卡片
         mobileHtml += `
-            <div class="mobile-card">
+            <div class="mobile-card" style="background:var(--bg-warm-gray);">
                 <div class="mobile-card-row">
-                    <span class="mobile-card-title"><span class="badge badge-id">${escapeHtml(p.id)}</span> ${escapeHtml(p.name)}</span>
-                    <span>${statusBadge}</span>
+                    <span class="mobile-card-title">${escapeHtml(group.name)}</span>
+                    <span class="badge ${status.cls}">${status.text}</span>
                 </div>
-                <div class="mobile-card-divider"></div>
-                <div class="mobile-card-row">
-                    <span style="color:var(--text-muted);">規格：${escapeHtml(p.specs || '-')}</span>
-                    <span style="font-weight:700; color:var(--primary-orange);">NT$ ${p.price} / ${escapeHtml(p.unit)}</span>
-                </div>
-                <div class="mobile-card-row">
-                    <span>${stockStatusBadge(stock)}</span>
-                    <span>${stock && stock.stockEnabled ? `可賣 ${stock.sellableQuantity}｜已售 ${stock.soldQuantity}｜剩餘 ${stock.remainingQuantity}` : '本團不限量'}</span>
-                </div>
+                <div class="mobile-card-row"><small class="text-muted">主商品，共 ${variants.length} 種口味／款式</small></div>
                 <div class="mobile-card-actions">
-                    <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')"><i class="fa-solid fa-edit"></i> 編輯</button>
-                    <button class="btn btn-secondary btn-sm" onclick="toggleProductStatus('${p.id}')">${p.enabled ? '停用' : '啟用'}</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteProduct('${p.id}')" ${isUsed ? 'disabled' : ''}><i class="fa-solid fa-trash"></i> 刪除</button>
+                    <button class="btn btn-secondary btn-sm" onclick="toggleProductGroupExpand('${group.id}')">${expanded ? '收合口味' : '展開口味'}</button>
+                    <button class="btn btn-secondary btn-sm" onclick="editProductGroupMeta('${group.id}')">編輯主商品</button>
+                    <button class="btn btn-secondary btn-sm" onclick="openAddVariantModal('${group.id}')">新增口味</button>
+                    <button class="btn btn-danger btn-sm" onclick="disableWholeProductGroup('${group.id}')">停用整組</button>
                 </div>
             </div>
         `;
+        if (expanded) {
+            variants.forEach(v => {
+                html += renderProductRow(v, { indent: true });
+                mobileHtml += renderProductMobileCard(v, { indent: true });
+            });
+        }
+    });
+
+    ungrouped.forEach(p => {
+        html += renderProductRow(p);
+        mobileHtml += renderProductMobileCard(p);
     });
 
     tbody.innerHTML = html || `<tr><td colspan="12" style="text-align:center; color:var(--text-muted);">無商品資料</td></tr>`;
@@ -1608,6 +1743,411 @@ function toggleProductStatus(id) {
     }
 }
 
+// ==========================================================================
+// 一個商品、多個口味／款式：客戶只看到一個主商品，內部每個口味仍是 state.products
+// 的獨立商品（各自獨立價格／庫存／訂單）。沒有 productGroupId 的舊商品完全不受影響。
+// 商品編號一律由伺服器產生（POST /api/product-groups 等），前端絕不自行編號。
+// ==========================================================================
+
+// ---- 新增商品：先選擇「單一商品」或「有不同口味／款式」 ----
+function openAddProductChoice() {
+    document.getElementById('product-add-choice-modal').classList.add('show');
+}
+
+function closeAddProductChoice() {
+    document.getElementById('product-add-choice-modal').classList.remove('show');
+}
+
+function chooseSingleProduct() {
+    closeAddProductChoice();
+    openProductModal();
+}
+
+function chooseMultiVariantProduct() {
+    closeAddProductChoice();
+    openProductGroupModal();
+}
+
+// ---- 新增多口味主商品 Modal（建立主商品＋所有口味，單一交易） ----
+let productGroupDraft = null;
+
+function blankVariantDraft() {
+    return {
+        key: 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2),
+        variantName: '', specs: '', price: '', pickupPrice: '', deliveryPrice: '', photo: '', enabled: true
+    };
+}
+
+function openProductGroupModal() {
+    productGroupDraft = {
+        name: '', description: '', imageUrl: '', unit: '份', samePrice: true, sameImage: false,
+        sharedPrice: '', sharedPickupPrice: '', sharedDeliveryPrice: '',
+        variants: [blankVariantDraft(), blankVariantDraft()]
+    };
+    document.getElementById('product-group-modal-title').textContent = '新增多口味／款式主商品';
+    renderProductGroupModal();
+    document.getElementById('product-group-modal').classList.add('show');
+}
+
+function closeProductGroupModal() {
+    productGroupDraft = null;
+    document.getElementById('product-group-modal').classList.remove('show');
+}
+
+// 每次操作（新增／刪除口味、切換共用選項）前先把目前表單內容存回 draft，避免遺失使用者已輸入的資料
+function rememberProductGroupDraft() {
+    if (!productGroupDraft) return;
+    productGroupDraft.name = document.getElementById('pg-name').value;
+    productGroupDraft.description = document.getElementById('pg-desc').value;
+    productGroupDraft.imageUrl = document.getElementById('pg-image').value;
+    productGroupDraft.unit = document.getElementById('pg-unit').value;
+    productGroupDraft.samePrice = document.getElementById('pg-same-price').checked;
+    productGroupDraft.sameImage = document.getElementById('pg-same-image').checked;
+    productGroupDraft.sharedPrice = document.getElementById('pg-shared-price').value;
+    productGroupDraft.sharedPickupPrice = document.getElementById('pg-shared-pickup-price').value;
+    productGroupDraft.sharedDeliveryPrice = document.getElementById('pg-shared-delivery-price').value;
+    document.querySelectorAll('#pg-variant-list [data-variant-key]').forEach(row => {
+        const key = row.getAttribute('data-variant-key');
+        const variant = productGroupDraft.variants.find(v => v.key === key);
+        if (!variant) return;
+        variant.variantName = row.querySelector('.pg-variant-name').value;
+        variant.specs = row.querySelector('.pg-variant-specs').value;
+        const priceInput = row.querySelector('.pg-variant-price');
+        if (priceInput) variant.price = priceInput.value;
+        const pickupInput = row.querySelector('.pg-variant-pickup-price');
+        if (pickupInput) variant.pickupPrice = pickupInput.value;
+        const deliveryInput = row.querySelector('.pg-variant-delivery-price');
+        if (deliveryInput) variant.deliveryPrice = deliveryInput.value;
+        const photoInput = row.querySelector('.pg-variant-photo');
+        if (photoInput) variant.photo = photoInput.value;
+    });
+}
+
+function addProductGroupVariant() {
+    rememberProductGroupDraft();
+    productGroupDraft.variants.push(blankVariantDraft());
+    renderProductGroupModal();
+}
+
+function removeProductGroupVariant(key) {
+    rememberProductGroupDraft();
+    if (productGroupDraft.variants.length <= 1) { alert('至少需要保留一個口味／款式！'); return; }
+    productGroupDraft.variants = productGroupDraft.variants.filter(v => v.key !== key);
+    renderProductGroupModal();
+}
+
+function toggleProductGroupSamePrice() {
+    rememberProductGroupDraft();
+    renderProductGroupModal();
+}
+
+function toggleProductGroupSameImage() {
+    rememberProductGroupDraft();
+    renderProductGroupModal();
+}
+
+function renderProductGroupModal() {
+    const draft = productGroupDraft;
+    if (!draft) return;
+    document.getElementById('pg-name').value = draft.name || '';
+    document.getElementById('pg-desc').value = draft.description || '';
+    document.getElementById('pg-image').value = draft.imageUrl || '';
+    document.getElementById('pg-unit').value = draft.unit || '份';
+    document.getElementById('pg-same-price').checked = !!draft.samePrice;
+    document.getElementById('pg-same-image').checked = !!draft.sameImage;
+    document.getElementById('pg-shared-price-row').style.display = draft.samePrice ? '' : 'none';
+    document.getElementById('pg-shared-price').value = draft.sharedPrice || '';
+    document.getElementById('pg-shared-pickup-price').value = draft.sharedPickupPrice || '';
+    document.getElementById('pg-shared-delivery-price').value = draft.sharedDeliveryPrice || '';
+
+    const list = document.getElementById('pg-variant-list');
+    list.innerHTML = draft.variants.map((v, index) => `
+        <div class="pg-variant-row" data-variant-key="${escapeHtml(v.key)}" style="border:1px solid var(--border-color); border-radius:8px; padding:12px; margin-bottom:10px;">
+            <div class="form-grid" style="margin-bottom:8px;">
+                <div class="form-group">
+                    <label class="form-label required">口味／款式名稱 ${index + 1}</label>
+                    <input type="text" class="form-control pg-variant-name" value="${escapeHtml(v.variantName)}" placeholder="例如：檨檬、蘆薈">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">規格 (選填)</label>
+                    <input type="text" class="form-control pg-variant-specs" value="${escapeHtml(v.specs)}" placeholder="例如：653ml x 3瓶">
+                </div>
+            </div>
+            ${draft.samePrice ? '' : `
+            <div class="form-grid" style="margin-bottom:8px;">
+                <div class="form-group"><label class="form-label required">售價 (元)</label><input type="number" class="form-control pg-variant-price" min="0" value="${escapeHtml(v.price)}"></div>
+                <div class="form-group"><label class="form-label">自取價 (選填)</label><input type="number" class="form-control pg-variant-pickup-price" min="0" value="${escapeHtml(v.pickupPrice)}"></div>
+                <div class="form-group"><label class="form-label">外送價 (選填)</label><input type="number" class="form-control pg-variant-delivery-price" min="0" value="${escapeHtml(v.deliveryPrice)}"></div>
+            </div>`}
+            ${draft.sameImage ? '' : `
+            <div class="form-group" style="margin-bottom:8px;">
+                <label class="form-label">此口味照片網址 (選填，留空則沿用主商品圖片)</label>
+                <input type="text" class="form-control pg-variant-photo" value="${escapeHtml(v.photo)}" placeholder="http://">
+            </div>`}
+            <button type="button" class="btn btn-danger btn-sm" onclick="removeProductGroupVariant('${escapeHtml(v.key)}')"><i class="fa-solid fa-trash"></i> 刪除此口味</button>
+        </div>
+    `).join('');
+}
+
+async function saveProductGroup() {
+    rememberProductGroupDraft();
+    const draft = productGroupDraft;
+    if (!draft) return;
+    const name = String(draft.name || '').trim();
+    if (!name) { alert('請填寫主商品名稱！'); return; }
+    if (!draft.variants.length) { alert('請至少新增一個口味／款式！'); return; }
+
+    let sharedPrice = null, sharedPickupPrice = null, sharedDeliveryPrice = null;
+    if (draft.samePrice) {
+        if (String(draft.sharedPrice ?? '').trim() === '') { alert('請填寫所有口味共用的售價！'); return; }
+        sharedPrice = parseFloat(draft.sharedPrice);
+        if (isNaN(sharedPrice) || sharedPrice < 0) { alert('售價必須是大於等於 0 的數字！'); return; }
+        sharedPickupPrice = String(draft.sharedPickupPrice ?? '').trim() === '' ? null : Math.round(Number(draft.sharedPickupPrice));
+        sharedDeliveryPrice = String(draft.sharedDeliveryPrice ?? '').trim() === '' ? null : Math.round(Number(draft.sharedDeliveryPrice));
+    }
+
+    const variantsPayload = [];
+    for (const v of draft.variants) {
+        const variantName = String(v.variantName || '').trim();
+        if (!variantName) { alert('每個口味都必須填寫口味／款式名稱！'); return; }
+        let price, pickupPrice, deliveryPrice;
+        if (draft.samePrice) {
+            price = sharedPrice; pickupPrice = sharedPickupPrice; deliveryPrice = sharedDeliveryPrice;
+        } else {
+            if (String(v.price ?? '').trim() === '') { alert(`口味「${variantName}」請填寫售價！`); return; }
+            price = parseFloat(v.price);
+            if (isNaN(price) || price < 0) { alert(`口味「${variantName}」售價必須是大於等於 0 的數字！`); return; }
+            pickupPrice = String(v.pickupPrice ?? '').trim() === '' ? null : Math.round(Number(v.pickupPrice));
+            deliveryPrice = String(v.deliveryPrice ?? '').trim() === '' ? null : Math.round(Number(v.deliveryPrice));
+        }
+        const useGroupImage = draft.sameImage;
+        const photo = useGroupImage ? (draft.imageUrl || '') : (v.photo || '');
+        variantsPayload.push({
+            variant_name: variantName, specs: v.specs || '', price, pickup_price: pickupPrice, delivery_price: deliveryPrice,
+            unit: draft.unit || '份', enabled: v.enabled !== false, image_url: /^https?:\/\//i.test(photo) ? photo : null,
+            use_group_image: useGroupImage
+        });
+    }
+
+    if (!getCloudApiKey()) {
+        alert('多口味商品編號由雲端伺服器產生，請先到「LINE 靜默收單設定」輸入 API 金鑰後再新增！');
+        return;
+    }
+
+    const requestId = 'pg-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+    const result = await cloudFetch('/api/product-groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            request_id: requestId, name, description: draft.description || '',
+            image_url: /^https?:\/\//i.test(draft.imageUrl || '') ? draft.imageUrl : null,
+            enabled: true, variants: variantsPayload
+        })
+    });
+
+    if (result.error) { alert(`建立多口味商品失敗：${result.error}`); return; }
+    if (result.data && result.data.duplicate) {
+        alert('偵測到重複提交，已忽略這次重複的建立請求（可能是重複點擊造成，不會建立第二筆）。');
+        closeProductGroupModal();
+        return;
+    }
+
+    const groupId = result.data.id;
+    const groupResult = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`);
+    if (groupResult.error || !groupResult.data) {
+        alert(`主商品已建立成功（編號 ${groupId}），但讀取詳細資料失敗：${groupResult.error || ''}，請重新整理頁面確認`);
+        closeProductGroupModal();
+        return;
+    }
+    upsertLocalProductGroupFromServer(groupResult.data);
+    expandedProductGroups.add(groupId);
+    closeProductGroupModal();
+    renderProducts();
+    alert(`已成功建立多口味主商品「${name}」（編號 ${groupId}），共 ${variantsPayload.length} 個口味／款式！`);
+}
+
+// 把伺服器回傳的主商品＋口味資料併入本機狀態（唯一入口；新增／編輯主商品／新增口味共用，
+// 遵循 state.products 一律以雲端資料為準的原則，避免前端自行猜測欄位造成不一致）
+function upsertLocalProductGroupFromServer(serverGroup) {
+    if (!state.productGroups) state.productGroups = [];
+    const groupIdx = state.productGroups.findIndex(g => g.id === serverGroup.id);
+    const group = {
+        id: serverGroup.id, name: serverGroup.name, description: serverGroup.description || '',
+        imageUrl: serverGroup.image_url || '', enabled: !!serverGroup.enabled
+    };
+    if (groupIdx > -1) state.productGroups[groupIdx] = group; else state.productGroups.push(group);
+
+    (serverGroup.variants || []).forEach(row => {
+        const product = {
+            id: row.id, name: row.name, specs: row.specs || '', price: row.price,
+            pickupPrice: row.pickup_price, deliveryPrice: row.delivery_price, unit: row.unit || '份',
+            enabled: !!row.enabled, description: row.description || '', photo: row.image_url || '',
+            productGroupId: row.product_group_id, variantName: row.variant_name, variantSort: row.variant_sort,
+            useGroupImage: !!row.use_group_image
+        };
+        const productIdx = state.products.findIndex(p => p.id === product.id);
+        if (productIdx > -1) state.products[productIdx] = product; else state.products.push(product);
+    });
+    saveStateToStorage();
+}
+
+// ---- 編輯主商品（名稱／說明／圖片）／停用整組（保留所有口味的訂單與庫存歷史紀錄） ----
+async function editProductGroupMeta(groupId) {
+    const group = state.productGroups.find(g => g.id === groupId);
+    if (!group) { alert('找不到主商品，請重新整理頁面！'); return; }
+    const name = prompt('主商品名稱：', group.name);
+    if (name === null) return; // 使用者取消
+    const trimmedName = name.trim();
+    if (!trimmedName) { alert('主商品名稱不可空白！'); return; }
+    const description = prompt('主商品說明（選填）：', group.description || '');
+    if (description === null) return;
+    const imageUrl = prompt('主商品圖片網址（選填）：', group.imageUrl || '');
+    if (imageUrl === null) return;
+
+    const result = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            name: trimmedName, description: description.trim(),
+            image_url: /^https?:\/\//i.test(imageUrl.trim()) ? imageUrl.trim() : null, enabled: group.enabled
+        })
+    });
+    if (result.error) { alert(`更新主商品失敗：${result.error}`); return; }
+    group.name = trimmedName;
+    group.description = description.trim();
+    group.imageUrl = imageUrl.trim();
+    // 主商品名稱變動不會回頭改寫既有口味的 products.name（伺服器端本來就不會動既有口味名稱），
+    // 這裡本機也一律以下次重新整理／同步時的伺服器資料為準，不在前端猜測重組。
+    saveStateToStorage();
+    renderProducts();
+    alert(`主商品「${trimmedName}」已更新！${cloudSyncSuffix(result)}`);
+}
+
+async function disableWholeProductGroup(groupId) {
+    const group = state.productGroups.find(g => g.id === groupId);
+    if (!group) return;
+    if (!confirm(`確定要停用整組「${group.name}」嗎？\n所有口味都會一併停用，但已有的訂單與庫存紀錄不會受影響。`)) return;
+    const result = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: group.name, description: group.description || '', image_url: group.imageUrl || null, enabled: false })
+    });
+    if (result.error) { alert(`停用整組失敗：${result.error}`); return; }
+    group.enabled = false;
+    state.products.filter(p => p.productGroupId === groupId).forEach(p => { p.enabled = false; });
+    saveStateToStorage();
+    renderProducts();
+    alert(`已停用整組「${group.name}」（所有口味）！${cloudSyncSuffix(result)}`);
+}
+
+// ---- 新增／編輯單一口味 ----
+let variantModalContext = null; // { groupId, productId }：productId 為空字串表示「新增口味」
+
+function openAddVariantModal(groupId) {
+    const group = state.productGroups.find(g => g.id === groupId);
+    if (!group) { alert('找不到主商品，請重新整理頁面！'); return; }
+    variantModalContext = { groupId, productId: '' };
+    document.getElementById('variant-modal-title').textContent = `新增口味／款式（${group.name}）`;
+    document.getElementById('variant-name').value = '';
+    document.getElementById('variant-specs').value = '';
+    document.getElementById('variant-price').value = '';
+    document.getElementById('variant-pickup-price').value = '';
+    document.getElementById('variant-delivery-price').value = '';
+    document.getElementById('variant-unit').value = '份';
+    document.getElementById('variant-enabled').value = 'true';
+    document.getElementById('variant-desc').value = '';
+    document.getElementById('variant-photo').value = '';
+    document.getElementById('variant-modal').classList.add('show');
+}
+
+function openVariantModal(groupId, productId) {
+    const group = state.productGroups.find(g => g.id === groupId);
+    const p = state.products.find(x => x.id === productId);
+    if (!group || !p) { alert('找不到此口味，請重新整理頁面！'); return; }
+    variantModalContext = { groupId, productId };
+    document.getElementById('variant-modal-title').textContent = `編輯口味／款式（${group.name}）`;
+    document.getElementById('variant-name').value = p.variantName || '';
+    document.getElementById('variant-specs').value = p.specs || '';
+    document.getElementById('variant-price').value = p.price;
+    document.getElementById('variant-pickup-price').value = (p.pickupPrice == null ? '' : p.pickupPrice);
+    document.getElementById('variant-delivery-price').value = (p.deliveryPrice == null ? '' : p.deliveryPrice);
+    document.getElementById('variant-unit').value = p.unit || '份';
+    document.getElementById('variant-enabled').value = String(p.enabled);
+    document.getElementById('variant-desc').value = p.description || '';
+    document.getElementById('variant-photo').value = p.photo || '';
+    document.getElementById('variant-modal').classList.add('show');
+}
+
+function closeVariantModal() {
+    variantModalContext = null;
+    document.getElementById('variant-modal').classList.remove('show');
+}
+
+async function saveVariant() {
+    if (!variantModalContext) return;
+    const { groupId, productId } = variantModalContext;
+    const variantName = document.getElementById('variant-name').value.trim();
+    const specs = document.getElementById('variant-specs').value.trim();
+    const priceVal = document.getElementById('variant-price').value;
+    const pickupPriceVal = document.getElementById('variant-pickup-price').value;
+    const deliveryPriceVal = document.getElementById('variant-delivery-price').value;
+    const unit = document.getElementById('variant-unit').value.trim();
+    const enabled = document.getElementById('variant-enabled').value === 'true';
+    const description = document.getElementById('variant-desc').value.trim();
+    const photo = document.getElementById('variant-photo').value.trim();
+
+    if (!variantName || !priceVal || !unit) { alert('請填寫口味名稱、售價與單位！'); return; }
+    const price = parseFloat(priceVal);
+    if (isNaN(price) || price < 0) { alert('售價必須是大於等於 0 的數字！'); return; }
+    const parseOptionalPrice = (raw, label) => {
+        if (raw == null || String(raw).trim() === '') return null;
+        const n = Math.round(Number(raw));
+        if (isNaN(n) || n < 0) { alert(`${label}必須是大於等於 0 的整數！`); return undefined; }
+        return n;
+    };
+    const pickupPrice = parseOptionalPrice(pickupPriceVal, '自取價');
+    if (pickupPrice === undefined) return;
+    const deliveryPrice = parseOptionalPrice(deliveryPriceVal, '外送價');
+    if (deliveryPrice === undefined) return;
+
+    if (!getCloudApiKey()) { alert('請先到「LINE 靜默收單設定」輸入 API 金鑰才能新增／編輯口味！'); return; }
+
+    const payload = {
+        variant_name: variantName, specs, price, pickup_price: pickupPrice, delivery_price: deliveryPrice,
+        unit, enabled, description, image_url: /^https?:\/\//i.test(photo) ? photo : null
+    };
+
+    const isEdit = Boolean(productId);
+    const result = isEdit
+        ? await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}/variants/${encodeURIComponent(productId)}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        })
+        : await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}/variants`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, request_id: 'pgv-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) })
+        });
+
+    if (result.error) { alert(`儲存口味失敗：${result.error}`); return; }
+    if (result.data && result.data.duplicate) {
+        alert('偵測到重複提交，已忽略這次重複的請求。');
+        closeVariantModal();
+        return;
+    }
+
+    const groupResult = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`);
+    if (groupResult.error || !groupResult.data) {
+        alert('口味已儲存，但讀取詳細資料失敗，請重新整理頁面確認');
+        closeVariantModal();
+        renderProducts();
+        return;
+    }
+    upsertLocalProductGroupFromServer(groupResult.data);
+    expandedProductGroups.add(groupId);
+    closeVariantModal();
+    renderProducts();
+    alert(`口味「${variantName}」已儲存！`);
+}
+
 // --- 雲端商品同步（D1 / R2，供 LINE 靜默收單解析與記事本文案使用） ---
 function getCloudApiKey() {
     return localStorage.getItem('easygo_line_admin_api_key') || '';
@@ -1736,10 +2276,16 @@ function printProductTotals() {
         totals[key].quantity += Number(it.quantity) || 0;
         totals[key].customers.add(o.customerId);
     }));
+    // 一個商品、多個口味：每個口味在此表中本來就是獨立一列（各自 productId），
+    // 額外附上「所屬主商品」與「口味」欄位方便閱讀，舊商品（沒有 productGroupId）這兩欄留空。
     const rows = Object.keys(totals).sort().map(id => {
         const t = totals[id];
         const stock = stockFor(state.activeGroupBuyId, id);
-        return `<tr><td>${escapeHtml(id)}</td><td>${escapeHtml(t.name)}</td><td>${escapeHtml(t.specs)}</td>
+        const product = state.products.find(p => p.id === id);
+        const group = product && product.productGroupId ? state.productGroups.find(g => g.id === product.productGroupId) : null;
+        const groupLabel = product && product.productGroupId ? (group ? group.name : product.productGroupId) : '';
+        const variantLabel = (product && product.variantName) || '';
+        return `<tr><td>${escapeHtml(id)}</td><td>${escapeHtml(t.name)}</td><td>${escapeHtml(groupLabel)}</td><td>${escapeHtml(variantLabel)}</td><td>${escapeHtml(t.specs)}</td>
             <td>${stock?.stockEnabled ? stock.sellableQuantity : '不限量'}</td>
             <td>${stock?.stockEnabled ? stock.soldQuantity : t.quantity}</td>
             <td>${stock?.stockEnabled ? stock.remainingQuantity : '—'}</td>
@@ -1748,7 +2294,7 @@ function printProductTotals() {
     if (!rows) return alert('目前團購沒有商品可列印。');
     runPrint(`<div class="print-page">
         <h2>商品總量表｜${escapeHtml(printGroupBuyTitle())}</h2>
-        <table class="inventory-print-table"><thead><tr><th>編號</th><th>商品</th><th>規格</th><th>可賣</th><th>已售</th><th>剩餘</th><th>狀態</th><th>客戶</th></tr></thead>
+        <table class="inventory-print-table"><thead><tr><th>編號</th><th>商品</th><th>所屬主商品</th><th>口味</th><th>規格</th><th>可賣</th><th>已售</th><th>剩餘</th><th>狀態</th><th>客戶</th></tr></thead>
         <tbody>${rows}</tbody></table>
     </div>`);
 }
@@ -2865,17 +3411,22 @@ function renderOrdersList() {
     // 篩選當前選定團購活動的訂單
     let list = state.orders.filter(o => o.groupBuyId === state.activeGroupBuyId);
 
-    // 搜尋過濾
+    // 搜尋過濾：商品品項比對主商品名稱／口味名稱（productName 已合成兩者）／商品代碼／規格，
+    // 一個商品、多個口味的訂單也能用口味名稱或商品代碼搜到（例如搜「檨檬」或「P024-A」）。
     if (orderFilters.search) {
         const s = orderFilters.search.toLowerCase();
-        list = list.filter(o => 
-            o.id.toLowerCase().includes(s) || 
-            o.customerId.toLowerCase().includes(s) || 
-            orderCustomerNameForSort(o).toLowerCase().includes(s) || 
-            (o.customerNickname || '').toLowerCase().includes(s) || 
-            o.phone.includes(s) || 
+        list = list.filter(o =>
+            o.id.toLowerCase().includes(s) ||
+            o.customerId.toLowerCase().includes(s) ||
+            orderCustomerNameForSort(o).toLowerCase().includes(s) ||
+            (o.customerNickname || '').toLowerCase().includes(s) ||
+            o.phone.includes(s) ||
             (o.address && o.address.toLowerCase().includes(s)) ||
-            o.items.some(it => it.productName.toLowerCase().includes(s))
+            o.items.some(it =>
+                it.productName.toLowerCase().includes(s) ||
+                String(it.productId || '').toLowerCase().includes(s) ||
+                String(it.specs || '').toLowerCase().includes(s)
+            )
         );
     }
 
@@ -3943,6 +4494,66 @@ function buildProductInventoryExportRows(gbId) {
     }).sort((a, b) => a["商品編號"].localeCompare(b["商品編號"], undefined, {numeric: true}));
 }
 
+// 一個商品、多個口味：「商品群組總覽」——把同一主商品的所有口味彙總成一列（口味數量／已售合計／剩餘合計／整組狀態）。
+// 沒有任何多口味商品時回傳空陣列，Excel 就不會多出這張表，不影響只有單一商品的舊使用者。
+function buildProductGroupExportRows(gbId) {
+    const groupBuy = state.groupBuys.find(g => g.id === gbId);
+    const variants = groupBuyProducts(groupBuy).filter(p => p.productGroupId);
+    const byGroup = new Map();
+    variants.forEach(p => {
+        if (!byGroup.has(p.productGroupId)) byGroup.set(p.productGroupId, []);
+        byGroup.get(p.productGroupId).push(p);
+    });
+    const rows = [];
+    byGroup.forEach((groupVariants, groupId) => {
+        const group = state.productGroups.find(g => g.id === groupId) || { id: groupId, name: groupId };
+        let hasStock = false;
+        let totalSold = 0;
+        let totalRemaining = 0;
+        let anySoldOut = false;
+        let allSoldOut = true;
+        groupVariants.forEach(variant => {
+            const stock = stockFor(gbId, variant.id);
+            if (stock && stock.stockEnabled) {
+                hasStock = true;
+                totalSold += Number(stock.soldQuantity) || 0;
+                totalRemaining += Number(stock.remainingQuantity) || 0;
+                if (stock.remainingQuantity > 0) allSoldOut = false;
+                else anySoldOut = true;
+            } else {
+                allSoldOut = false;
+            }
+        });
+        const status = !hasStock ? '不限量' : allSoldOut ? '全部售完' : anySoldOut ? '部分口味售完' : '開放訂購';
+        rows.push({
+            "主商品編號": group.id,
+            "主商品名稱": group.name,
+            "口味數量": groupVariants.length,
+            "已售數量合計": hasStock ? totalSold : "",
+            "剩餘數量合計": hasStock ? totalRemaining : "",
+            "整組狀態": status
+        });
+    });
+    return rows.sort((a, b) => String(a["主商品編號"]).localeCompare(String(b["主商品編號"]), undefined, { numeric: true }));
+}
+
+// 一個商品、多個口味：「口味明細」——沿用既有的商品數量統計，只挑出有 productGroupId 的口味，
+// 額外附上所屬主商品編號／名稱與口味名稱，方便直接對照 商品群組總覽。
+function buildVariantDetailExportRows(gbId) {
+    return buildProductInventoryExportRows(gbId)
+        .map(row => ({ row, product: state.products.find(p => p.id === row["商品編號"]) }))
+        .filter(entry => entry.product && entry.product.productGroupId)
+        .map(entry => {
+            const group = state.productGroups.find(g => g.id === entry.product.productGroupId);
+            return {
+                "主商品編號": entry.product.productGroupId,
+                "主商品名稱": group ? group.name : entry.product.productGroupId,
+                "口味名稱": entry.product.variantName || "",
+                ...entry.row
+            };
+        });
+}
+
 // --- Excel 匯出模組 (支援多工作表) ---
 function exportToExcel() {
     const gbId = document.getElementById('export-group-select').value;
@@ -4052,6 +4663,19 @@ function exportToExcel() {
 
     const ws4 = XLSX.utils.json_to_sheet(dataSheet4);
     XLSX.utils.book_append_sheet(wb, ws4, "外送及自取名單");
+
+    // 5、6. 一個商品、多個口味：只有這次團購真的有多口味商品時才附加這兩張表，
+    // 完全沒有多口味商品的舊使用者匯出結果不會多出空白工作表。
+    const dataSheet5 = buildProductGroupExportRows(gbId);
+    if (dataSheet5.length) {
+        const ws5 = XLSX.utils.json_to_sheet(dataSheet5);
+        XLSX.utils.book_append_sheet(wb, ws5, "商品群組總覽");
+    }
+    const dataSheet6 = buildVariantDetailExportRows(gbId);
+    if (dataSheet6.length) {
+        const ws6 = XLSX.utils.json_to_sheet(dataSheet6);
+        XLSX.utils.book_append_sheet(wb, ws6, "口味明細");
+    }
 
     // 產出檔名：阿賢Easy購_團購名稱_訂單彙整_日期.xlsx
     const today = new Date().toISOString().split('T')[0];
@@ -4407,5 +5031,63 @@ window.EasyGoApp = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
+    },
+    // 一個商品、多個口味：新手開團精靈專用的建立主商品入口（唯一入口，與商品管理「新增多口味主商品」共用同一支後端 API，
+    // 不建立第二套商品資料流程）。payload 需含 request_id、name、variants[]（每個變體含 variant_name/price/...）。
+    async createProductGroup(payload) {
+        const result = await cloudFetch('/api/product-groups', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (result.error || result.skipped || !result.data || result.data.duplicate) return result;
+        const groupResult = await cloudFetch(`/api/product-groups/${encodeURIComponent(result.data.id)}`);
+        if (groupResult.error || !groupResult.data) return groupResult;
+        upsertLocalProductGroupFromServer(groupResult.data);
+        return { data: groupResult.data };
+    },
+    // 一個商品、多個口味：發布「單一合併商品卡」（預設行為），內部呼叫既有 /api/line/flex-preview、
+    // /api/line/publish（帶 product_group_id 即走合併卡邏輯），不建立新的 LINE 發布流程。
+    async publishGroupCard(groupBuyId, productGroupId, lineGroupId) {
+        const groupBuy = state.groupBuys.find(item => item.id === groupBuyId);
+        if (!groupBuy || !productGroupId || !lineGroupId) {
+            return { error: 'INVALID_WIZARD_SELECTION', status: 400 };
+        }
+        const groupResult = await window.EasyGoApp.syncGroup(groupBuy);
+        if (groupResult.error || groupResult.skipped) return groupResult;
+        const payload = {
+            group_id: lineGroupId,
+            group_buy_id: groupBuy.id,
+            product_group_id: productGroupId,
+            show_image: true,
+            published_by: '新手開團精靈'
+        };
+        const previewResult = await cloudFetch('/api/line/flex-preview', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (previewResult.error || previewResult.skipped) return previewResult;
+        return cloudFetch('/api/line/publish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+    },
+    lineNoteGroup(products, options) {
+        return LineNote.generateGroupLineNote(products, options);
+    },
+    // 幫已存在的主商品補新增一個口味（新手開團精靈重試流程用；商品管理列表的「新增口味」按鈕走 saveVariant，兩者共用同一支後端 API）。
+    async addProductGroupVariant(groupId, payload) {
+        const result = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}/variants`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (result.error || result.skipped || !result.data || result.data.duplicate) return result;
+        const groupResult = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`);
+        if (groupResult.error || !groupResult.data) return groupResult;
+        upsertLocalProductGroupFromServer(groupResult.data);
+        return { data: { id: result.data.id, created: result.data.created } };
     }
 };

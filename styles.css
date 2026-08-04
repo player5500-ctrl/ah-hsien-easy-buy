@@ -1908,6 +1908,44 @@ body.wizard-open {
     height: 22px;
 }
 
+/* 一個商品、多個口味：新手開團精靈的「有沒有不同口味」選擇與主商品共用欄位 */
+.wizard-grouped-choice {
+    margin-bottom: 18px;
+}
+
+.wizard-choice-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.wizard-choice-option {
+    min-height: 48px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border: 2px solid #eee;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.wizard-choice-option input {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.wizard-group-meta-card {
+    margin-bottom: 18px;
+    padding: 14px;
+    border-radius: 14px;
+    background: #fffaf4;
+    border: 1px dashed #f0b77c;
+}
+
 .wizard-stock-disabled {
     opacity: 0.48;
     pointer-events: none;

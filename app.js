@@ -2057,6 +2057,7 @@ function openAddVariantModal(groupId) {
     document.getElementById('variant-enabled').value = 'true';
     document.getElementById('variant-desc').value = '';
     document.getElementById('variant-photo').value = '';
+    document.getElementById('variant-photo-file').value = '';
     document.getElementById('variant-modal').classList.add('show');
 }
 
@@ -2075,6 +2076,7 @@ function openVariantModal(groupId, productId) {
     document.getElementById('variant-enabled').value = String(p.enabled);
     document.getElementById('variant-desc').value = p.description || '';
     document.getElementById('variant-photo').value = p.photo || '';
+    document.getElementById('variant-photo-file').value = '';
     document.getElementById('variant-modal').classList.add('show');
 }
 
@@ -2134,6 +2136,18 @@ async function saveVariant() {
         return;
     }
 
+    // 圖片上傳走既有的單一商品圖片上傳端點（口味在 products 表內本來就是一般商品列，
+    // 上傳成功後端會直接把 image_url 寫回該筆商品，所以之後重新讀取主商品資料即可拿到最新圖片網址）。
+    const targetProductId = isEdit ? productId : (result.data && result.data.id);
+    const fileInput = document.getElementById('variant-photo-file');
+    const file = fileInput && fileInput.files && fileInput.files[0];
+    let uploadError = '';
+    if (file && targetProductId) {
+        const uploadResult = await uploadProductImageToCloud(targetProductId, file);
+        if (uploadResult.error) uploadError = uploadResult.error;
+        fileInput.value = '';
+    }
+
     const groupResult = await cloudFetch(`/api/product-groups/${encodeURIComponent(groupId)}`);
     if (groupResult.error || !groupResult.data) {
         alert('口味已儲存，但讀取詳細資料失敗，請重新整理頁面確認');
@@ -2145,7 +2159,7 @@ async function saveVariant() {
     expandedProductGroups.add(groupId);
     closeVariantModal();
     renderProducts();
-    alert(`口味「${variantName}」已儲存！`);
+    alert(`口味「${variantName}」已儲存！${uploadError ? `\n（⚠️ 圖片上傳失敗：${uploadError}）` : ''}`);
 }
 
 // --- 雲端商品同步（D1 / R2，供 LINE 靜默收單解析與記事本文案使用） ---

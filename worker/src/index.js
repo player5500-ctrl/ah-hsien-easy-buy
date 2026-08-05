@@ -771,7 +771,7 @@ async function getGroupFlexContext(env, payload) {
     const productGroup = await env.DB.prepare("SELECT id, name, description, image_url FROM product_groups WHERE id = ? AND enabled = 1")
         .bind(productGroupId).first();
     if (!productGroup) return { error: "找不到主商品，或主商品已停用", status: 404 };
-    const variants = (await env.DB.prepare(`SELECT p.id, p.name, p.variant_name, p.price, p.pickup_price, p.delivery_price
+    const variants = (await env.DB.prepare(`SELECT p.id, p.name, p.variant_name, p.price, p.pickup_price, p.delivery_price, p.image_url
         FROM products p JOIN group_buy_products gbp ON gbp.product_id = p.id AND gbp.group_buy_id = ? AND gbp.enabled = 1
         WHERE p.product_group_id = ? AND p.enabled = 1 ORDER BY p.variant_sort, p.id`).bind(groupBuyId, productGroupId).all()).results;
     if (!variants.length) return { error: "此主商品目前沒有可發布的口味，請先加入團購並啟用庫存", status: 409 };

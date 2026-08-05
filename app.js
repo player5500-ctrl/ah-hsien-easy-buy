@@ -1195,7 +1195,10 @@ function updateLineFlexPreview() {
     if (entry.isGroup) {
         // 合併商品卡只有一顆「選擇口味與數量」按鈕開 LIFF，沒有數量按鈕組合可選（跟後端 buildGroupFlexMessage 一致）。
         if (quantityFieldset) quantityFieldset.hidden = true;
-        const coverPhoto = entry.group?.imageUrl || '';
+        // 跟後端 buildGroupFlexMessage 一致：主商品沒圖時退回第一個有圖的口味當卡片封面。
+        const coverPhoto = (entry.group?.imageUrl || '').trim()
+            || entry.variants.map(v => resolveProductPhoto(v)).find(url => /^https:\/\//i.test(url || ''))
+            || '';
         const image = document.getElementById('line-publish-show-image').checked && /^https:\/\//i.test(coverPhoto)
             ? `<img src="${escapeLineText(coverPhoto)}" alt="${escapeLineText(entry.group ? entry.group.name : '')}">`
             : '';

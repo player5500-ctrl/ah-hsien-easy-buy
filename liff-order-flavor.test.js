@@ -57,6 +57,40 @@ test("HTML 有口味選擇卡與換口味按鈕，CSS 提供大按鈕與明顯�
 });
 
 test("快取版本號已更新，避免客戶瀏覽器沿用舊版口味選擇頁", () => {
-    assert.match(html, /liff-order\.css\?v=20260804-flavor-picker/);
-    assert.match(html, /liff-order\.js\?v=20260804-flavor-picker/);
+    assert.match(html, /liff-order\.css\?v=20260805-flavor-fields/);
+    assert.match(html, /liff-order\.js\?v=20260805-flavor-fields/);
+});
+
+// 回歸保護：Worker 口味端點回傳 camelCase（productId/variantName/imageUrl），
+// 但畫面程式用 snake_case 取值。曾因此造成口味卡沒圖、名稱空白、
+// data-flavor-id 空字串 → 點口味後直接顯示「找不到此團購活動」。
+test("loadGroup 會把 camelCase 口味欄位轉成畫面用的 snake_case，並丟棄沒有 id 的口味", () => {
+    assert.match(js, /function normalizeGroupVariant\(row\)/);
+    const normalizeFn = js.match(/function normalizeGroupVariant\(row\)[\s\S]*?\n    }/)[0];
+    assert.match(normalizeFn, /row\.productId \|\| row\.id/);
+    assert.match(normalizeFn, /row\.variantName \|\| row\.variant_name/);
+    assert.match(normalizeFn, /row\.imageUrl \|\| row\.image_url/);
+    assert.match(normalizeFn, /row\.pickupPrice/);
+    assert.match(normalizeFn, /row\.deliveryPrice/);
+
+    const loadGroupFn = js.match(/function loadGroup\(productGroupId\)[\s\S]*?\n    }/)[0];
+    assert.match(loadGroupFn, /\.map\(normalizeGroupVariant\)/);
+    assert.match(loadGroupFn, /\.filter\(function \(v\) \{ return v\.id; \}\)/);
+});
+
+test("normalizeGroupVariant 實際轉換：camelCase 輸入產出 renderFlavorPanel 需要的欄位", () => {
+    // liff-order.js 是瀏覽器 IIFE，這裡抽出 normalizeGroupVariant 單獨執行驗證行為
+    const fnSource = js.match(/function normalizeGroupVariant\(row\)[\s\S]*?\n    }/)[0];
+    const normalize = new Function("return (" + fnSource.replace(/^function normalizeGroupVariant/, "function") + ")")();
+    const out = normalize({
+        productId: "P031-A", variantName: "A.6粒", specs: null, unit: "份",
+        imageUrl: "https://img.example/a.png", price: 400, pickupPrice: null, deliveryPrice: null,
+        stock: { stockEnabled: true, remainingQuantity: 50 }
+    });
+    assert.equal(out.id, "P031-A");
+    assert.equal(out.variant_name, "A.6粒");
+    assert.equal(out.image_url, "https://img.example/a.png");
+    assert.equal(out.price, 400);
+    assert.equal(out.pickup_price, null);
+    assert.equal(out.stock.remainingQuantity, 50);
 });

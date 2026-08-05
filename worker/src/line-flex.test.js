@@ -124,6 +124,30 @@ test("一個商品、多個口味：合併成一張主商品卡，只有一顆�
     assert.doesNotMatch(button.uri, /[?&]productId=/);
 });
 
+test("合併商品卡封面圖：主商品有圖用主商品圖；主商品沒圖時退回第一個有圖的口味；都沒圖就不放 hero", () => {
+    const variants = [
+        { id: "P024-A", variant_name: "檨檬", price: 210, image_url: "https://example.com/a.jpg" },
+        { id: "P024-B", variant_name: "蘆薈", price: 220, image_url: "https://example.com/b.jpg" }
+    ];
+    const withGroupImage = buildGroupFlexMessage({
+        groupBuy, productGroup: { id: "PG024", name: "德國 Pril 洗碗精", image_url: "https://example.com/pril.jpg" },
+        variants, liffId: LIFF_ID
+    });
+    assert.equal(withGroupImage.contents.hero.url, "https://example.com/pril.jpg");
+
+    const fallbackToVariant = buildGroupFlexMessage({
+        groupBuy, productGroup: { id: "PG024", name: "德國 Pril 洗碗精", image_url: null },
+        variants, liffId: LIFF_ID
+    });
+    assert.equal(fallbackToVariant.contents.hero.url, "https://example.com/a.jpg", "主商品沒圖時應退回第一個有圖的口味");
+
+    const noImage = buildGroupFlexMessage({
+        groupBuy, productGroup: { id: "PG024", name: "德國 Pril 洗碗精", image_url: null },
+        variants: variants.map(v => ({ ...v, image_url: null })), liffId: LIFF_ID
+    });
+    assert.equal(noImage.contents.hero, undefined);
+});
+
 test("合併商品卡缺少 LIFF_ID 或沒有可發布的口味時要丟出明確錯誤", () => {
     const productGroup = { id: "PG024", name: "德國 Pril 洗碗精" };
     const variants = [{ id: "P024-A", variant_name: "檨檬", price: 210 }];

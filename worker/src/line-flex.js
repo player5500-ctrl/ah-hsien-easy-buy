@@ -101,8 +101,12 @@ function buildGroupFlexMessage({ groupBuy, productGroup, variants, showImage = t
     ];
 
     const bubble = { type: "bubble", body: { type: "box", layout: "vertical", contents: bodyContents } };
-    if (showImage && /^https:\/\//i.test(productGroup.image_url || "")) {
-        bubble.hero = { type: "image", url: productGroup.image_url, size: "full", aspectRatio: "20:13", aspectMode: "cover" };
+    // 主商品自己有圖就用主商品圖；沒有就退回第一個有圖的口味，避免合併卡完全沒有商品照片。
+    const heroUrl = /^https:\/\//i.test(productGroup.image_url || "")
+        ? productGroup.image_url
+        : (variants.map(variant => variant.image_url).find(url => /^https:\/\//i.test(url || "")) || "");
+    if (showImage && heroUrl) {
+        bubble.hero = { type: "image", url: heroUrl, size: "full", aspectRatio: "20:13", aspectMode: "cover" };
     }
     return {
         type: "flex",

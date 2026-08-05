@@ -217,6 +217,26 @@
             });
     }
 
+    // Worker 的口味端點回傳 camelCase 欄位（productId / variantName / imageUrl / pickupPrice…），
+    // 但本檔其餘程式（renderFlavorPanel / effectivePrice / chooseFlavor）沿用單一商品端點的
+    // snake_case 欄位名。這裡統一轉換，避免口味卡沒圖、名稱空白、data-flavor-id 變成空字串
+    // 導致點選口味後出現「找不到此團購活動」。
+    function normalizeGroupVariant(row) {
+        var name = row.variantName || row.variant_name || row.name || "";
+        return {
+            id: String(row.productId || row.id || "").trim(),
+            variant_name: name,
+            name: name,
+            specs: row.specs || "",
+            unit: row.unit || "份",
+            image_url: row.imageUrl || row.image_url || "",
+            price: row.price,
+            pickup_price: row.pickupPrice != null ? row.pickupPrice : (row.pickup_price != null ? row.pickup_price : null),
+            delivery_price: row.deliveryPrice != null ? row.deliveryPrice : (row.delivery_price != null ? row.delivery_price : null),
+            stock: row.stock || null
+        };
+    }
+
     // 一個商品、多個口味：讀取主商品＋所有口味（各自獨立庫存／價格），只用於畫出選擇畫面。
     function loadGroup(productGroupId) {
         return apiRequest(
@@ -228,6 +248,7 @@
             var gbStatus = data.groupBuyStatus;
             if (gbStatus === "expired") throw new AppError(ALLOWED_ERRORS.expired);
             if (gbStatus === "closed") throw new AppError(ALLOWED_ERRORS.closed);
+            data.variants = (data.variants || []).map(normalizeGroupVariant).filter(function (v) { return v.id; });
             state.group = data;
         });
     }

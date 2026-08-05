@@ -139,6 +139,34 @@ test("發布合併商品卡：呼叫 EasyGoApp.publishGroupCard（帶 product_gr
     assert.equal(app.alerts.some(a => a.includes("合併商品卡發布成功")), true);
 });
 
+test("團購商品勾選清單是空的（舊資料「全選」語意）時，發布合併卡仍會把該主商品所有口味併入 productIds 再同步，不會把 group_buy_products 清空", async () => {
+    const app = loadApp();
+    app.setApiKey("test-key");
+    app.setState({
+        // productIds 故意留空，模擬管理員從沒在「團購活動」勾選清單裡勾過這兩個口味的真實情境
+        // （前台商品管理頁用「留空＝全部商品」當 fallback 顯示，但後端同步是照字面重建 group_buy_products）。
+        groupBuys: [{ id: "GB1", name: "測試團購", productIds: [], endDate: "2026-08-31", notes: "" }],
+        activeGroupBuyId: "GB1",
+        productGroups,
+        products: groupedProducts
+    });
+
+    await app.openLinePublishModal("GB1");
+    app.fields["line-publish-product"] = "group:PG031";
+    app.fields["line-publish-group"] = "Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
+    await app.publishLineProduct();
+
+    const groupSyncCalls = app.requests.filter(r => r.url.includes("/api/group-buys/GB1") && r.method === "PUT");
+    assert.equal(groupSyncCalls.length, 1);
+    assert.deepEqual(
+        new Set(groupSyncCalls[0].body.product_ids),
+        new Set(["P031-A", "P031-B"]),
+        "即使團購原本的 productIds 是空的，發布合併卡時也要把這個主商品的所有口味補進去，不能同步出空陣列把關聯清光"
+    );
+    assert.deepEqual(new Set(app.getState().groupBuys[0].productIds), new Set(["P031-A", "P031-B"]));
+});
+
 test("一般（沒有分組）商品仍走原本單商品發布流程：一個商品一張卡、可選數量按鈕", async () => {
     const app = loadApp({ querySelectorAll: selector => (selector === ".line-publish-quantity:checked" ? [{ value: "1" }] : []) });
     app.setApiKey("test-key");

@@ -1254,6 +1254,13 @@ async function publishLineProduct() {
     if (entry.isGroup) {
         const groupName = entry.group ? entry.group.name : '';
         if (!confirm(`確定將「${groupName}」合併商品卡（共 ${entry.variants.length} 種口味／款式，客戶點卡後在 LIFF 選口味）發布到所選 LINE 群組？`)) return;
+        // 跟單商品發布一樣，把「這次要發布的所有口味」併入團購的 productIds 再同步：
+        // 團購商品勾選清單留空或只勾一部分時，前台會當成「全選」顯示，但後端同步團購時是照 productIds 字面重建
+        // group_buy_products（先整批清空再照清單重插），漏掉的口味等於把關聯清光或從沒建立，
+        // 之後合併商品卡／LIFF 選口味頁都會查不到那個口味。
+        const variantIds = entry.variants.map(v => v.id);
+        groupBuy.productIds = [...new Set([...variantIds, ...(groupBuy.productIds || [])])];
+        saveStateToStorage();
         button.disabled = true;
         status.textContent = '正在同步團購資料，正在發布合併商品卡到 LINE...';
         try {
